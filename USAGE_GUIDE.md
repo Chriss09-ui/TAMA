@@ -1,0 +1,479 @@
+# TAMA Framework - Detailed Usage Guide
+
+## Table of Contents
+1. [Introduction](#introduction)
+2. [Basic Usage](#basic-usage)
+3. [Advanced Configuration](#advanced-configuration)
+4. [Understanding the Workflow](#understanding-the-workflow)
+5. [Interpreting Results](#interpreting-results)
+6. [Best Practices](#best-practices)
+7. [Troubleshooting](#troubleshooting)
+
+## Introduction
+
+TAMA (Thematic Analysis using Multi-Agent LLMs) automates qualitative thematic analysis of clinical interview transcripts using three specialized AI agents:
+
+- **Generation Agent**: Creates initial themes from transcript
+- **Evaluation Agent**: Assesses theme quality using four criteria
+- **Refinement Agent**: Improves themes based on feedback
+
+The framework iterates until themes meet quality standards or maximum iterations are reached.
+
+## Basic Usage
+
+### Step 1: Prepare Your Transcript
+
+Your transcript should be a plain text file containing interview content. Example format:
+
+```
+Interview with Participant A:
+
+Interviewer: Can you tell me about...
+
+Participant A: [Response]
+
+Interview with Participant B:
+
+...
+```
+
+Place your transcript in the `data/` directory.
+
+### Step 2: Run Analysis
+
+```python
+import os
+from src.tama import TAMAFramework, load_transcript
+
+# Initialize
+tama = TAMAFramework(
+    api_key=os.getenv("OPENAI_API_KEY"),
+    model="gpt-4o"
+)
+
+# Load transcript
+transcript = load_transcript("data/your_transcript.txt")
+
+# Run analysis
+result = tama.run_analysis(
+    transcript=transcript,
+    session_name="my_analysis"
+)
+```
+
+### Step 3: Review Results
+
+Check `outputs/my_analysis/` for:
+- `00_summary.txt`: Human-readable summary
+- `00_final_results.json`: Complete data
+
+## Advanced Configuration
+
+### Configuration Parameters
+
+```python
+tama = TAMAFramework(
+    api_key="your-api-key",
+
+    # Model selection
+    model="gpt-4o",  # Options: "gpt-4o", "gpt-4o-mini", "gpt-4-turbo"
+
+    # Quality control
+    acceptance_threshold=4.0,  # Min score (1.0-5.0) to accept themes
+    max_iterations=5,          # Max refinement cycles
+
+    # Output settings
+    output_dir="outputs",      # Where to save results
+
+    # Custom evaluation criteria (optional)
+    expert_criteria={
+        "coverage": "Custom coverage criterion...",
+        "actionability": "Custom actionability criterion...",
+        "distinctiveness": "Custom distinctiveness criterion...",
+        "relevance": "Custom relevance criterion..."
+    }
+)
+```
+
+### Model Selection Guidelines
+
+| Model | Speed | Cost | Quality | Best For |
+|-------|-------|------|---------|----------|
+| gpt-4o | Fast | Medium | High | Production use (recommended) |
+| gpt-4o-mini | Very Fast | Low | Good | Testing, quick analysis |
+| gpt-4-turbo | Medium | High | Highest | Maximum quality needed |
+
+### Acceptance Threshold
+
+The acceptance threshold determines when themes are good enough:
+
+- **3.0-3.5**: Lenient - faster completion, lower quality
+- **4.0**: Balanced - recommended for most use cases
+- **4.5-5.0**: Strict - may require many iterations
+
+### Custom Evaluation Criteria
+
+Tailor evaluation to your domain:
+
+```python
+# For mental health interviews
+mental_health_criteria = {
+    "coverage": "should capture all reported emotional states and coping strategies",
+    "actionability": "should focus on a single psychological concept or experience",
+    "distinctiveness": "should not overlap with other psychological themes",
+    "relevance": "must reflect the patient's subjective experience accurately"
+}
+
+# For educational research
+education_criteria = {
+    "coverage": "should encompass all learning challenges and successes mentioned",
+    "actionability": "should represent a clear educational concept or practice",
+    "distinctiveness": "should be pedagogically distinct from other themes",
+    "relevance": "must align with teachers' and students' reported experiences"
+}
+
+tama = TAMAFramework(
+    api_key=api_key,
+    expert_criteria=mental_health_criteria  # or education_criteria
+)
+```
+
+## Understanding the Workflow
+
+### Phase 1: Generation
+
+**Input**: Raw transcript (any length)
+
+**Steps**:
+1. **Chunking**: Splits transcript into ~4000-word segments
+2. **Coding**: Extracts codes (<25 words) from each chunk
+3. **Theme Generation**: Synthesizes codes into themes (~25 words)
+
+**Output**: Initial themes with associated codes
+
+**Duration**: ~2-5 minutes for typical interviews
+
+### Phase 2: Evaluation
+
+**Input**: Generated themes + original codes
+
+**Process**: Evaluates each theme on 4 criteria (1-5 scale):
+- **Coverage**: Does it capture important patterns comprehensively?
+- **Actionability**: Is it a single, clear concept?
+- **Distinctiveness**: Is it clearly distinct from other themes?
+- **Relevance**: Does it accurately reflect the data?
+
+**Output**:
+- Individual theme scores
+- Average score across all themes
+- Accept/reject decision
+- Specific improvement suggestions
+
+**Duration**: ~1-2 minutes
+
+### Phase 3: Refinement
+
+**Input**: Themes + evaluation feedback
+
+**Operations**:
+- **DELETE**: Remove irrelevant themes
+- **COMBINE**: Merge overlapping themes
+- **SPLIT**: Separate multi-concept themes
+- **ADD**: Include missing important themes
+
+**Output**: Refined themes
+
+**Duration**: ~1-2 minutes
+
+### Iteration
+
+The framework repeats Evaluation → Refinement until:
+- Themes achieve acceptance threshold, OR
+- Maximum iterations reached
+
+**Typical iterations**: 2-4 cycles
+
+## Interpreting Results
+
+### Final Results JSON Structure
+
+```json
+{
+  "session_name": "my_analysis",
+  "timestamp": "2025-01-16T10:30:00",
+  "configuration": {...},
+  "generation": {
+    "num_chunks": 5,
+    "num_codes": 47,
+    "initial_num_themes": 8
+  },
+  "refinement_iterations": 3,
+  "final_themes": [
+    {
+      "name": "Theme name",
+      "description": "Theme description (~25 words)",
+      "codes": ["Associated code descriptions..."]
+    },
+    ...
+  ],
+  "metadata": {
+    "total_themes": 7,
+    "final_average_score": 4.2
+  },
+  "accepted": true
+}
+```
+
+### Theme Quality Indicators
+
+**Good themes have**:
+- Clear, descriptive names
+- Concise descriptions (~25 words)
+- 3+ associated codes
+- Scores ≥4.0 on all criteria
+
+**Warning signs**:
+- Very long descriptions (>40 words) → may contain multiple concepts
+- Only 1-2 codes → may be too specific or not well-supported
+- Low distinctiveness score → may overlap with other themes
+
+### Summary File Format
+
+```
+================================================================================
+TAMA THEMATIC ANALYSIS - SUMMARY
+================================================================================
+
+Session: my_analysis
+Timestamp: 2025-01-16T10:30:00
+Model: gpt-4o
+Status: ACCEPTED
+Final Score: 4.2/5.0
+Refinement Iterations: 3
+
+================================================================================
+FINAL THEMES
+================================================================================
+
+1. [Theme Name]
+   [Theme description]
+   Associated codes: 5
+
+2. [Theme Name]
+   [Theme description]
+   Associated codes: 8
+
+...
+
+================================================================================
+REFINEMENT HISTORY
+================================================================================
+
+Iteration 1:
+  Evaluation Score: 3.5/5.0
+  Refinement: Combined 2 overlapping themes, deleted 1 irrelevant theme
+  Theme Count: 8 -> 6
+
+Iteration 2:
+  Evaluation Score: 3.9/5.0
+  Refinement: Split 1 multi-concept theme, added 1 missing theme
+  Theme Count: 6 -> 7
+
+Iteration 3:
+  Evaluation Score: 4.2/5.0
+  Refinement: Minor adjustments to theme descriptions
+  Theme Count: 7 -> 7
+```
+
+## Best Practices
+
+### 1. Transcript Preparation
+
+**Do**:
+- Include speaker labels (Interviewer, Participant A, etc.)
+- Maintain conversation flow
+- Include relevant context
+
+**Don't**:
+- Include excessive metadata or timestamps
+- Use special characters heavily
+- Mix multiple languages extensively
+
+### 2. Configuration Selection
+
+**For exploratory analysis**:
+```python
+tama = TAMAFramework(
+    model="gpt-4o-mini",
+    acceptance_threshold=3.5,
+    max_iterations=3
+)
+```
+
+**For publication-quality analysis**:
+```python
+tama = TAMAFramework(
+    model="gpt-4o",
+    acceptance_threshold=4.5,
+    max_iterations=7,
+    expert_criteria=custom_criteria
+)
+```
+
+### 3. Iterative Refinement
+
+- Start with default settings
+- Review first-pass themes
+- Adjust criteria based on domain needs
+- Re-run with custom criteria
+
+### 4. Quality Validation
+
+Always:
+1. Review final themes manually
+2. Check if themes make sense for your domain
+3. Verify themes are supported by actual quotes
+4. Compare with any existing manual analysis
+
+### 5. Documentation
+
+Save your configuration for reproducibility:
+
+```python
+config = {
+    "date": "2025-01-16",
+    "transcript": "parent_interviews_aaoca.txt",
+    "model": "gpt-4o",
+    "threshold": 4.0,
+    "iterations": 5,
+    "custom_criteria": expert_criteria
+}
+
+# Save with results
+import json
+with open("outputs/my_analysis/config.json", 'w') as f:
+    json.dump(config, f, indent=2)
+```
+
+## Troubleshooting
+
+### Issue: Low Quality Themes
+
+**Symptoms**: Vague themes, low scores, doesn't capture data well
+
+**Solutions**:
+- Increase `max_iterations` to allow more refinement
+- Provide custom `expert_criteria` specific to your domain
+- Check if transcript is clear and well-formatted
+- Try using `gpt-4o` instead of `gpt-4o-mini`
+
+### Issue: Too Many Iterations
+
+**Symptoms**: Reaches max iterations without acceptance
+
+**Solutions**:
+- Lower `acceptance_threshold` (e.g., from 4.0 to 3.5)
+- Review custom criteria - may be too strict
+- Check if transcript quality is sufficient
+- Increase `max_iterations` if themes are improving each cycle
+
+### Issue: Too Few Themes
+
+**Symptoms**: Only 2-3 themes generated, missing important patterns
+
+**Solutions**:
+- Check transcript length - may be too short
+- Review Generation Agent's codes - are patterns being captured?
+- Explicitly add coverage criterion emphasizing comprehensiveness
+- Manually review and provide feedback for additional iteration
+
+### Issue: Too Many Themes
+
+**Symptoms**: 15+ themes, many seem overlapping
+
+**Solutions**:
+- Increase `acceptance_threshold` to force more combining
+- Emphasize distinctiveness in custom criteria
+- Review Refinement Agent's COMBINE operations
+- Manually consolidate similar themes in final review
+
+### Issue: API Errors
+
+**Symptoms**: Rate limit errors, timeouts
+
+**Solutions**:
+- Use `gpt-4o-mini` to reduce rate limit pressure
+- Add delays between iterations (modify source code)
+- Reduce chunk size for smaller API calls
+- Check OpenAI account tier and limits
+
+### Issue: Inconsistent Results
+
+**Symptoms**: Different themes on repeated runs
+
+**Solutions**:
+- This is expected with LLMs - some variation is normal
+- For more consistency, lower temperature (requires code modification)
+- Run multiple times and compare results
+- Use custom criteria to guide consistency
+
+## Example Use Cases
+
+### Clinical Interviews (AAOCA Parents)
+
+```python
+clinical_criteria = {
+    "coverage": "should comprehensively capture parent experiences, concerns, and medical journey",
+    "actionability": "should focus on a single aspect of the AAOCA experience",
+    "distinctiveness": "should represent a unique dimension of parent perspectives",
+    "relevance": "must accurately reflect parents' reported experiences and emotions"
+}
+
+tama = TAMAFramework(
+    api_key=api_key,
+    model="gpt-4o",
+    acceptance_threshold=4.0,
+    expert_criteria=clinical_criteria
+)
+```
+
+### User Research Interviews
+
+```python
+user_research_criteria = {
+    "coverage": "should capture all user pain points, needs, and behaviors",
+    "actionability": "should represent a distinct user need or behavior pattern",
+    "distinctiveness": "should be clearly different from other user themes",
+    "relevance": "must reflect actual user statements and experiences"
+}
+
+tama = TAMAFramework(
+    api_key=api_key,
+    model="gpt-4o-mini",  # Faster for iterative research
+    acceptance_threshold=3.5,
+    expert_criteria=user_research_criteria
+)
+```
+
+### Educational Research
+
+```python
+education_criteria = {
+    "coverage": "should encompass all teaching challenges and successes",
+    "actionability": "should represent a clear pedagogical concept",
+    "distinctiveness": "should be educationally distinct from other themes",
+    "relevance": "must align with educators' reported experiences"
+}
+
+tama = TAMAFramework(
+    api_key=api_key,
+    model="gpt-4o",
+    acceptance_threshold=4.5,  # Higher standard for publication
+    expert_criteria=education_criteria
+)
+```
+
+## Additional Resources
+
+- **Installation Guide**: [INSTALLATION.md](INSTALLATION.md)
+- **Example Script**: [example_usage.py](example_usage.py)
