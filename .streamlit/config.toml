@@ -1,0 +1,18 @@
+[server]
+address = "127.0.0.1"
+headless = true
+
+[browser]
+gatherUsageStats = false
+
+[client]
+toolbarMode = "minimal"
+showErrorDetails = "type"
+
+[theme]
+base = "light"
+primaryColor = "#245947"
+backgroundColor = "#FAFBF8"
+secondaryBackgroundColor = "#EFF3EE"
+textColor = "#20312A"
+font = "sans serif"

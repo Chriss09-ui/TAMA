@@ -4,7 +4,7 @@ Evaluates generated themes based on four criteria: Coverage, Actionability, Dist
 Provides feedback for refinement until affirmative answer is received.
 """
 
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 from openai import OpenAI
 from pydantic import BaseModel
 import json
@@ -12,10 +12,10 @@ import json
 
 class EvaluationCriteria(BaseModel):
     """Represents evaluation criteria for themes."""
-    coverage: str = "should comprehensively capture all important patterns and concepts from the data"
-    actionability: str = "should encapsulate a single concept that is clear and actionable"
-    distinctiveness: str = "should be clearly distinct from other themes without overlap"
-    relevance: str = "must accurately reflect the parents' experiences and concerns"
+    coverage: str = "应覆盖所提供编码中的重要规律"
+    actionability: str = "应表达一个清楚、便于理解的概念"
+    distinctiveness: str = "应与其他主题有明确区分，避免重叠"
+    relevance: str = "应有提供的编码作为依据，并准确反映受访者表达的意思"
 
 
 class EvaluationResult(BaseModel):
@@ -48,22 +48,30 @@ class EvaluationAgent:
     1. Coverage: Comprehensively captures important patterns
     2. Actionability: Encapsulates single, clear concept
     3. Distinctiveness: Clearly distinct from other themes
-    4. Relevance: Accurately reflects the data (parent experiences)
+    4. Relevance: Accurately reflects the supplied data
 
     Provides feedback until affirmative answer is received.
     """
 
-    def __init__(self, api_key: str, model: str = "gpt-4o", expert_criteria: Dict[str, str] = None):
+    def __init__(
+        self,
+        api_key: str,
+        model: str = "gpt-4o",
+        expert_criteria: Optional[Dict[str, str]] = None,
+        base_url: Optional[str] = None
+    ):
         """
         Initialize the Evaluation Agent.
 
         Args:
-            api_key: OpenAI API key
+            api_key: API key for the selected model provider
             model: Model to use (default: gpt-4o)
-            expert_criteria: Optional custom evaluation criteria from cardiac expert
+            expert_criteria: Optional study-specific evaluation criteria from a researcher
+            base_url: Optional OpenAI-compatible API endpoint
         """
-        self.client = OpenAI(api_key=api_key)
+        self.client = OpenAI(api_key=api_key, base_url=base_url)
         self.model = model
+        self.before_model_call = None
 
         # Use expert-provided criteria or defaults
         if expert_criteria:
@@ -93,55 +101,60 @@ class EvaluationAgent:
         codes_text = "\n".join([f"- {code['description']}" for code in original_codes])
         theme_codes_text = "\n".join([f"- {code}" for code in theme.get("codes", [])])
 
-        prompt = f"""You are a clinical research expert evaluating themes from a thematic analysis of parent interviews about their children's congenital heart disease (AAOCA).
+        prompt = f"""你是一名质性研究者，正在评估访谈分析形成的主题。
+仅使用提供的主题和编码，不预设材料未说明的人群或研究主题。
 
-Evaluate the following theme based on these four criteria:
+请依据以下四项标准评估主题：
 
-1. COVERAGE: {self.criteria.coverage}
-2. ACTIONABILITY: {self.criteria.actionability}
-3. DISTINCTIVENESS: {self.criteria.distinctiveness}
-4. RELEVANCE: {self.criteria.relevance}
+1. 覆盖度：{self.criteria.coverage}
+2. 概念清晰度：{self.criteria.actionability}
+3. 区分度：{self.criteria.distinctiveness}
+4. 相关性：{self.criteria.relevance}
 
-THEME TO EVALUATE:
-Name: {theme['name']}
-Description: {theme['description']}
-Associated Codes:
+待评估主题：
+名称：{theme['name']}
+描述：{theme['description']}
+关联编码：
 {theme_codes_text}
 
-OTHER THEMES (for distinctiveness comparison):
+其他主题（用于比较区分度）：
 {other_themes_text}
 
-ORIGINAL CODES (for coverage check):
+原始编码（用于检查覆盖度）：
 {codes_text}
 
-For each criterion, provide:
-- A score from 1-5 (1=poor, 5=excellent)
-- Specific feedback explaining the score
-- Suggestions for improvement if score < 4
+每项标准均需提供：
+- 1 到 5 分的整数评分（1 分较差，5 分优秀）
+- 解释评分依据的具体反馈
+- 低于 4 分时给出改进建议
+- 如果编码不足以支持某项判断，指出证据缺口，不编造依据
+- 反馈使用与主题和编码相同的语言
 
-Also determine:
-- Whether this theme needs refinement (true/false)
-- Specific refinement suggestions (as a list)
+同时判断：
+- 该主题是否需要修订（布尔值）
+- 具体的修订建议（列表）
 
-Provide your response as a JSON object with this structure:
+只返回符合以下结构的 JSON 对象，不添加解释或 Markdown；保留英文键名：
 {{
-  "coverage_score": 1-5,
-  "coverage_feedback": "Detailed feedback on coverage",
-  "actionability_score": 1-5,
-  "actionability_feedback": "Detailed feedback on actionability",
-  "distinctiveness_score": 1-5,
-  "distinctiveness_feedback": "Detailed feedback on distinctiveness",
-  "relevance_score": 1-5,
-  "relevance_feedback": "Detailed feedback on relevance",
-  "needs_refinement": true/false,
-  "refinement_suggestions": ["Suggestion 1", "Suggestion 2", ...]
+  "coverage_score": 4,
+  "coverage_feedback": "覆盖度的具体反馈",
+  "actionability_score": 4,
+  "actionability_feedback": "概念清晰度的具体反馈",
+  "distinctiveness_score": 4,
+  "distinctiveness_feedback": "区分度的具体反馈",
+  "relevance_score": 4,
+  "relevance_feedback": "相关性的具体反馈",
+  "needs_refinement": false,
+  "refinement_suggestions": []
 }}
 """
 
+        if self.before_model_call:
+            self.before_model_call(f"评估主题 · {theme['name']}")
         response = self.client.chat.completions.create(
             model=self.model,
             messages=[
-                {"role": "system", "content": "You are a clinical research expert specializing in qualitative thematic analysis evaluation."},
+                {"role": "system", "content": "你是一名质性研究者。仅依据提供的材料评估主题。"},
                 {"role": "user", "content": prompt}
             ],
             temperature=0.2,
@@ -234,12 +247,12 @@ Provide your response as a JSON object with this structure:
         themes_needing_refinement = [e for e in evaluations if e.needs_refinement]
 
         if is_acceptable:
-            feedback = f"ACCEPTABLE: The themes have achieved an average score of {average_score:.2f}/5.0, meeting the acceptance threshold. "
+            feedback = f"已达标：主题平均分为 {average_score:.2f}/5.0，达到验收标准。"
             if themes_needing_refinement:
-                feedback += f"However, {len(themes_needing_refinement)} theme(s) could benefit from minor refinements for optimal quality."
+                feedback += f"仍有 {len(themes_needing_refinement)} 个主题可进一步完善。"
         else:
-            feedback = f"NEEDS REFINEMENT: The themes have an average score of {average_score:.2f}/5.0, below the acceptance threshold. "
-            feedback += f"{len(themes_needing_refinement)} theme(s) require refinement. "
+            feedback = f"需要修订：主题平均分为 {average_score:.2f}/5.0，低于验收标准。"
+            feedback += f"其中 {len(themes_needing_refinement)} 个主题需要修订。"
 
             # Summarize common issues
             coverage_issues = sum(1 for e in evaluations if e.coverage_score < 4)
@@ -249,16 +262,16 @@ Provide your response as a JSON object with this structure:
 
             issues = []
             if coverage_issues > 0:
-                issues.append(f"Coverage ({coverage_issues} themes)")
+                issues.append(f"覆盖度（{coverage_issues} 个主题）")
             if actionability_issues > 0:
-                issues.append(f"Actionability ({actionability_issues} themes)")
+                issues.append(f"概念清晰度（{actionability_issues} 个主题）")
             if distinctiveness_issues > 0:
-                issues.append(f"Distinctiveness ({distinctiveness_issues} themes)")
+                issues.append(f"区分度（{distinctiveness_issues} 个主题）")
             if relevance_issues > 0:
-                issues.append(f"Relevance ({relevance_issues} themes)")
+                issues.append(f"相关性（{relevance_issues} 个主题）")
 
             if issues:
-                feedback += f"Common issues: {', '.join(issues)}."
+                feedback += f"常见问题：{'、'.join(issues)}。"
 
         return feedback
 

@@ -3,7 +3,7 @@ Generation Agent for TAMA Framework
 Handles chunking, coding, and initial theme generation from interview transcripts.
 """
 
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 from openai import OpenAI
 from pydantic import BaseModel
 import json
@@ -35,21 +35,23 @@ class GenerationAgent:
     """
     Generation Agent that processes interview transcripts through:
     1. Chunking: Split transcripts into manageable segments (3-5k words per chunk)
-    2. Coding: Extract codes from each chunk (< 25 words per code)
-    3. Theme Generation: Synthesize codes into themes (25 words per theme)
+    2. Coding: Extract concise codes from each chunk
+    3. Theme Generation: Synthesize codes into concise themes
     """
 
-    def __init__(self, api_key: str, model: str = "gpt-4o"):
+    def __init__(self, api_key: str, model: str = "gpt-4o", base_url: Optional[str] = None):
         """
         Initialize the Generation Agent.
 
         Args:
-            api_key: OpenAI API key
+            api_key: API key for the selected model provider
             model: Model to use (default: gpt-4o)
+            base_url: Optional OpenAI-compatible API endpoint
         """
-        self.client = OpenAI(api_key=api_key)
+        self.client = OpenAI(api_key=api_key, base_url=base_url)
         self.model = model
         self.chunk_size = 4000  # words per chunk (3-5k as per diagram)
+        self.before_model_call = None
 
     def chunk_transcript(self, transcript: str) -> List[Chunk]:
         """
@@ -82,7 +84,7 @@ class GenerationAgent:
     def generate_codes_from_chunk(self, chunk: Chunk) -> List[Code]:
         """
         Generate codes from a single chunk using LLM.
-        Each code should be < 25 words describing a pattern or concept.
+        Each code should briefly describe a pattern or concept.
 
         Args:
             chunk: Chunk object containing transcript segment
@@ -90,34 +92,35 @@ class GenerationAgent:
         Returns:
             List of Code objects
         """
-        prompt = f"""You are a qualitative research expert conducting thematic analysis of clinical interview transcripts.
+        prompt = f"""你是一名质性研究者，正在对访谈文本进行归纳式主题分析。
 
-Your task is to extract codes from the following interview transcript chunk.
+请从以下访谈片段中提取编码。
 
-INSTRUCTIONS:
-- Identify key patterns, concepts, and ideas expressed in the text
-- Each code should be a concise description (< 25 words)
-- Codes should capture meaningful units of information
-- Focus on patient/parent experiences, emotions, concerns, and perspectives
-- Output your codes as a JSON array of objects with "description" field
+要求：
+- 识别文本中有意义的经历、行为、观点和规律
+- 每条编码用简短词组或短句表达，并对应一段有意义的信息
+- 不要预设文本未说明的人群、场景或研究主题
+- 编码内容使用与访谈文本相同的语言，不编造文本中没有的信息
+- 返回包含 "codes" 数组的 JSON 对象，每条编码包含 "description" 字段
 
-CHUNK TEXT:
+访谈片段：
 {chunk.text}
 
-Provide your response as a JSON object with this structure:
+只返回符合以下结构的 JSON 对象，不添加解释或 Markdown：
 {{
   "codes": [
-    {{"description": "Description of code 1"}},
-    {{"description": "Description of code 2"}},
-    ...
+    {{"description": "第一条编码的简短描述"}},
+    {{"description": "第二条编码的简短描述"}}
   ]
 }}
 """
 
+        if self.before_model_call:
+            self.before_model_call(f"提取编码 · 片段 {chunk.chunk_id + 1}")
         response = self.client.chat.completions.create(
             model=self.model,
             messages=[
-                {"role": "system", "content": "You are a qualitative research expert specializing in thematic analysis of clinical interviews."},
+                {"role": "system", "content": "你是一名质性研究者。所有编码都必须有提供的访谈文本作为依据。"},
                 {"role": "user", "content": prompt}
             ],
             temperature=0.3,
@@ -163,7 +166,7 @@ Provide your response as a JSON object with this structure:
     def generate_themes(self, codes: List[Code]) -> List[Theme]:
         """
         Generate themes from codes using LLM.
-        Each theme should be ~25 words and synthesize related codes.
+        Each theme should briefly synthesize related codes.
 
         Args:
             codes: List of Code objects
@@ -173,38 +176,39 @@ Provide your response as a JSON object with this structure:
         """
         codes_text = "\n".join([f"- {code.description}" for code in codes])
 
-        prompt = f"""You are a qualitative research expert conducting thematic analysis of clinical interview transcripts.
+        prompt = f"""你是一名质性研究者，正在进行归纳式主题分析。
 
-Your task is to synthesize the following codes into coherent themes.
+请将以下编码归纳为连贯的主题。
 
-INSTRUCTIONS:
-- Group related codes into broader themes
-- Each theme should have a clear, descriptive name
-- Each theme description should be approximately 25 words
-- Themes should capture meaningful patterns across the data
-- Ensure themes are distinct from each other
-- Each theme should reference the specific codes it encompasses
+要求：
+- 将相关编码归入更宽泛的主题
+- 每个主题有清楚、具体的名称，描述用一句简短的话表达
+- 主题应概括材料中的重要规律，并与其他主题有所区分
+- 每个主题的 "codes" 字段列出其包含的原始编码描述，不改写这些描述
+- 仅依据提供的编码归纳主题，不编造其中未出现的人群、场景或研究主题
+- 主题名称和描述使用与编码相同的语言
 
-CODES:
+编码：
 {codes_text}
 
-Provide your response as a JSON object with this structure:
+只返回符合以下结构的 JSON 对象，不添加解释或 Markdown：
 {{
   "themes": [
     {{
-      "name": "Theme name",
-      "description": "Approximately 25-word description of the theme",
-      "codes": ["List of code descriptions that belong to this theme"]
-    }},
-    ...
+      "name": "主题名称",
+      "description": "用一句简短的话描述主题",
+      "codes": ["属于该主题的原始编码描述"]
+    }}
   ]
 }}
 """
 
+        if self.before_model_call:
+            self.before_model_call("归纳主题")
         response = self.client.chat.completions.create(
             model=self.model,
             messages=[
-                {"role": "system", "content": "You are a qualitative research expert specializing in thematic analysis of clinical interviews."},
+                {"role": "system", "content": "你是一名质性研究者。所有主题都必须有提供的编码作为依据。"},
                 {"role": "user", "content": prompt}
             ],
             temperature=0.3,

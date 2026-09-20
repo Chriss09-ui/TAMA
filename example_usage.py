@@ -1,6 +1,6 @@
 """
 Example Usage of TAMA Framework
-Demonstrates how to run thematic analysis on clinical interview transcripts.
+Demonstrates how to run thematic analysis on interview transcripts.
 """
 
 import os
@@ -12,45 +12,55 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'src'))
 from tama import TAMAFramework, load_transcript
 
 
+def get_model_config():
+    """Select MiMo, DeepSeek, or OpenAI from the configured API keys."""
+    mimo_api_key = os.getenv("MIMO_API_KEY")
+    if mimo_api_key:
+        return (
+            mimo_api_key,
+            os.getenv("MIMO_MODEL", "mimo-v2.5-pro"),
+            os.getenv("MIMO_BASE_URL") or "https://api.xiaomimimo.com/v1"
+        )
+
+    deepseek_api_key = os.getenv("DEEPSEEK_API_KEY")
+    if deepseek_api_key:
+        return (
+            deepseek_api_key,
+            os.getenv("DEEPSEEK_MODEL", "deepseek-flash"),
+            os.getenv("DEEPSEEK_BASE_URL") or "https://api.deepseek.com"
+        )
+
+    openai_api_key = os.getenv("OPENAI_API_KEY")
+    if not openai_api_key:
+        raise ValueError("Please set MIMO_API_KEY, DEEPSEEK_API_KEY, or OPENAI_API_KEY environment variable")
+    return openai_api_key, os.getenv("OPENAI_MODEL", "gpt-4o"), None
+
+
 def main():
     """
     Main function demonstrating TAMA framework usage.
     """
     # Configuration
-    API_KEY = os.getenv("OPENAI_API_KEY")
-    if not API_KEY:
-        raise ValueError("Please set OPENAI_API_KEY environment variable")
+    api_key, model, base_url = get_model_config()
 
     # Path to your transcript file
     TRANSCRIPT_PATH = "data/sample_transcript.txt"
 
-    # Optional: Define custom evaluation criteria from cardiac expert
+    # Optional: Define study-specific evaluation criteria
     # If not provided, default criteria will be used
     expert_criteria = {
-    "coverage": (
-        "The generated themes should comprehensively capture the key aspects of parents’ "
-        "lived experiences while caring for children with AAOCA from the transcripts."
-    ),
-    "actionability": (
-        "Each theme should encapsulate a single concept that provides clear, specific, "
-        "and meaningful insights. These insights should be actionable and useful for "
-        "informing interventions, resources, or research."
-    ),
-    "distinctiveness": (
-        "Each theme should be clearly distinct from one another, with no overlaps or redundancies."
-    ),
-    "relevance": (
-        "Each theme should clearly reflect the parents’ lived experiences, concerns, and needs, "
-        "without confusing or overlapping with themes related to the child/patient’s feelings, "
-        "concerns, or experiences."
-    ),
-}
+        "coverage": "主题应覆盖访谈材料中的重要规律。",
+        "actionability": "每个主题应表达一个清楚、具体且便于理解的概念。",
+        "distinctiveness": "各主题之间应有明确区分，避免重复或重叠。",
+        "relevance": "每个主题都应有访谈材料作为依据，不添加未经证实的假设。",
+    }
 
     # Initialize TAMA framework
     print("Initializing TAMA Framework...")
     tama = TAMAFramework(
-        api_key=API_KEY,
-        model="gpt-4o",  # or "gpt-4o-mini" for faster/cheaper processing
+        api_key=api_key,
+        model=model,
+        base_url=base_url,
         max_iterations=5,  # Maximum refinement iterations
         acceptance_threshold=4.0,  # Minimum score (out of 5) to accept themes
         output_dir="outputs",  # Directory to save results

@@ -4,7 +4,7 @@ Main orchestrator coordinating Generation, Evaluation, and Refinement agents.
 """
 
 import os
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, Callable
 from datetime import datetime
 import json
 
@@ -29,18 +29,20 @@ class TAMAFramework:
         max_iterations: int = 5,
         acceptance_threshold: float = 4.0,
         output_dir: str = "outputs",
-        expert_criteria: Optional[Dict[str, str]] = None
+        expert_criteria: Optional[Dict[str, str]] = None,
+        base_url: Optional[str] = None
     ):
         """
         Initialize TAMA Framework.
 
         Args:
-            api_key: OpenAI API key
+            api_key: API key for the selected model provider
             model: Model to use for all agents (default: gpt-4o)
             max_iterations: Maximum refinement iterations (default: 5)
             acceptance_threshold: Minimum score to accept themes (default: 4.0)
             output_dir: Directory to save outputs (default: outputs)
-            expert_criteria: Optional custom evaluation criteria from cardiac expert
+            expert_criteria: Optional study-specific evaluation criteria from a researcher
+            base_url: Optional OpenAI-compatible API endpoint
         """
         self.api_key = api_key
         self.model = model
@@ -50,13 +52,14 @@ class TAMAFramework:
         self.expert_criteria = expert_criteria
 
         # Initialize agents
-        self.generation_agent = GenerationAgent(api_key=api_key, model=model)
+        self.generation_agent = GenerationAgent(api_key=api_key, model=model, base_url=base_url)
         self.evaluation_agent = EvaluationAgent(
             api_key=api_key,
             model=model,
-            expert_criteria=expert_criteria
+            expert_criteria=expert_criteria,
+            base_url=base_url
         )
-        self.refinement_agent = RefinementAgent(api_key=api_key, model=model)
+        self.refinement_agent = RefinementAgent(api_key=api_key, model=model, base_url=base_url)
 
         # Create output directory
         os.makedirs(output_dir, exist_ok=True)
@@ -65,7 +68,8 @@ class TAMAFramework:
         self,
         transcript: str,
         session_name: str = None,
-        save_intermediate: bool = True
+        save_intermediate: bool = True,
+        before_model_call: Optional[Callable[[str], None]] = None,
     ) -> Dict[str, Any]:
         """
         Run complete TAMA analysis with iterative refinement.
@@ -74,12 +78,17 @@ class TAMAFramework:
             transcript: Interview transcript text
             session_name: Optional name for this analysis session
             save_intermediate: Whether to save intermediate results
+            before_model_call: Optional checkpoint called before each model request
 
         Returns:
             Dictionary containing final themes and analysis metadata
         """
         if session_name is None:
             session_name = f"tama_session_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+
+        self.generation_agent.before_model_call = before_model_call
+        self.evaluation_agent.before_model_call = before_model_call
+        self.refinement_agent.before_model_call = before_model_call
 
         session_dir = os.path.join(self.output_dir, session_name)
         os.makedirs(session_dir, exist_ok=True)

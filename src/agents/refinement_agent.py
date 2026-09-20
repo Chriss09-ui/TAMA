@@ -7,7 +7,7 @@ Refines themes based on evaluation feedback using four operations:
 - Delete: Delete irrelevant themes
 """
 
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 from openai import OpenAI
 from pydantic import BaseModel
 import json
@@ -38,16 +38,18 @@ class RefinementAgent:
     4. DELETE: Delete irrelevant themes (low relevance)
     """
 
-    def __init__(self, api_key: str, model: str = "gpt-4o"):
+    def __init__(self, api_key: str, model: str = "gpt-4o", base_url: Optional[str] = None):
         """
         Initialize the Refinement Agent.
 
         Args:
-            api_key: OpenAI API key
+            api_key: API key for the selected model provider
             model: Model to use (default: gpt-4o)
+            base_url: Optional OpenAI-compatible API endpoint
         """
-        self.client = OpenAI(api_key=api_key)
+        self.client = OpenAI(api_key=api_key, base_url=base_url)
         self.model = model
+        self.before_model_call = None
 
     def create_refinement_plan(
         self,
@@ -66,69 +68,70 @@ class RefinementAgent:
         Returns:
             RefinementPlan object
         """
-        themes_text = json.dumps(themes, indent=2)
-        evaluations_text = json.dumps(evaluation_results["theme_evaluations"], indent=2)
+        themes_text = json.dumps(themes, ensure_ascii=False, indent=2)
+        evaluations_text = json.dumps(evaluation_results["theme_evaluations"], ensure_ascii=False, indent=2)
         codes_text = "\n".join([f"- {code['description']}" for code in codes])
 
-        prompt = f"""You are a qualitative research expert refining themes based on evaluation feedback.
+        prompt = f"""你是一名质性研究者，正在根据评估反馈修订主题。
 
-Your task is to create a refinement plan using these four operations:
-1. ADD: Add missing important themes that were identified in the evaluation
-2. SPLIT: Split themes that contain multiple concepts into separate themes
-3. COMBINE: Combine repeated or overlapping themes to eliminate redundancy
-4. DELETE: Delete themes that are irrelevant or don't reflect the data
+请使用以下四种操作制定修订计划；"operation" 字段使用括号中的英文值：
+1. 增加（"add"）：补充评估中发现缺失的重要主题
+2. 拆分（"split"）：将包含多个概念的主题拆成不同主题
+3. 合并（"combine"）：合并重复或重叠的主题
+4. 删除（"delete"）：删除与材料无关或不能反映材料的主题
 
-CURRENT THEMES:
+当前主题：
 {themes_text}
 
-EVALUATION RESULTS:
+评估结果：
 {evaluations_text}
 
-GLOBAL FEEDBACK:
+总体反馈：
 {evaluation_results["global_feedback"]}
 
-ORIGINAL CODES (for reference):
+原始编码（供参考）：
 {codes_text}
 
-INSTRUCTIONS:
-- Review the evaluation feedback for each theme
-- Identify themes with low scores (<4) in any criterion
-- Plan specific refinement operations to address the issues
-- Prioritize operations: DELETE first, then COMBINE, then SPLIT, then ADD
-- For SPLIT operations, create 2-3 new themes with distinct concepts
-- For COMBINE operations, merge themes into a single comprehensive theme
-- For ADD operations, identify important missing patterns from codes
-- Ensure refined themes will improve coverage, actionability, distinctiveness, and relevance
+要求：
+- 查看每个主题的评估反馈，找出任一标准低于 4 分的主题
+- 针对问题制定具体操作，优先顺序为删除、合并、拆分、增加
+- 拆分时创建 2 至 3 个概念不同的新主题；合并时创建一个涵盖相关概念的新主题
+- 增加主题时，从原始编码中识别遗漏的重要规律
+- 修订应改善覆盖度、概念清晰度、区分度和相关性
+- 所有新增或修改的主题都必须有提供的编码作为依据，不编造背景或证据
+- 新主题、操作理由及计划摘要使用与当前主题和编码相同的语言
 
-Provide your response as a JSON object with this structure:
+只返回符合以下结构的 JSON 对象，不添加解释或 Markdown；保留英文键名及操作值：
 {{
   "operations": [
     {{
-      "operation": "add" | "split" | "combine" | "delete",
-      "target_themes": ["Theme name(s) to operate on"],
-      "rationale": "Why this operation is needed",
+      "operation": "add",
+      "target_themes": [],
+      "rationale": "需要执行该操作的原因",
       "new_theme": {{
-        "name": "New theme name (if applicable)",
-        "description": "New theme description (if applicable)",
-        "codes": ["Related codes (if applicable)"]
+        "name": "新主题名称",
+        "description": "新主题描述",
+        "codes": ["相关的原始编码描述"]
       }}
-    }},
-    ...
+    }}
   ],
-  "summary": "Brief summary of the refinement plan"
+  "summary": "修订计划的简短摘要"
 }}
 
-Note:
-- For DELETE operations, new_theme should be null
-- For SPLIT operations, provide multiple operation entries with different new_theme values
-- For COMBINE operations, provide one new_theme that merges the target_themes
-- For ADD operations, target_themes can be empty and provide new_theme
+补充说明：
+- 无需修订时，"operations" 返回空数组
+- 删除操作的 "new_theme" 为 null
+- 拆分操作需要返回多条记录，各自提供不同的 "new_theme"
+- 合并操作提供一个合并后的 "new_theme"
+- 增加操作的 "target_themes" 可以为空数组，并提供 "new_theme"
 """
 
+        if self.before_model_call:
+            self.before_model_call("修订主题")
         response = self.client.chat.completions.create(
             model=self.model,
             messages=[
-                {"role": "system", "content": "You are a qualitative research expert specializing in thematic analysis refinement."},
+                {"role": "system", "content": "你是一名质性研究者。仅依据提供的编码和评估反馈修订主题。"},
                 {"role": "user", "content": prompt}
             ],
             temperature=0.3,
