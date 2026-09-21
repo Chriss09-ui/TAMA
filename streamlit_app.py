@@ -5,8 +5,10 @@ import os
 import sys
 from io import BytesIO
 from pathlib import Path
-from zipfile import BadZipFile
+from xml.etree import ElementTree
+from zipfile import BadZipFile, ZipFile
 
+import keyring
 import streamlit as st
 from docx import Document
 from docx.opc.exceptions import PackageNotFoundError
@@ -19,6 +21,51 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from tama import TAMAFramework
 from analysis_job import AnalysisJob
+
+KEYRING_SERVICE = "TAMA Qualitative Analysis"
+
+
+def load_saved_api_key(provider: str) -> str:
+    """Read a provider key once per browser session."""
+    state_key = f"saved_api_key_{provider}"
+    if state_key not in st.session_state:
+        try:
+            st.session_state[state_key] = keyring.get_password(KEYRING_SERVICE, provider) or ""
+        except Exception:
+            st.session_state[state_key] = ""
+            st.session_state[f"api_key_notice_{provider}"] = (
+                "warning", "系统凭据库暂不可用；仍可手动填写 API Key。"
+            )
+    return st.session_state[state_key]
+
+
+def save_api_key(provider: str) -> None:
+    """Persist a key only after the user clicks Save."""
+    typed_key = st.session_state.get(f"api_key_{provider}", "").strip()
+    notice_key = f"api_key_notice_{provider}"
+    if not typed_key:
+        st.session_state[notice_key] = ("error", "请先输入要保存的 API Key。")
+        return
+    try:
+        keyring.set_password(KEYRING_SERVICE, provider, typed_key)
+    except Exception:
+        st.session_state[notice_key] = ("error", "保存失败，请检查系统凭据库是否可用。")
+        return
+    st.session_state[f"saved_api_key_{provider}"] = typed_key
+    st.session_state[f"api_key_{provider}"] = ""
+    st.session_state[notice_key] = ("success", "API Key 已保存到系统凭据库。")
+
+
+def delete_saved_api_key(provider: str) -> None:
+    """Remove only this provider's persisted key."""
+    notice_key = f"api_key_notice_{provider}"
+    try:
+        keyring.delete_password(KEYRING_SERVICE, provider)
+    except Exception:
+        st.session_state[notice_key] = ("error", "删除失败，请检查系统凭据库是否可用。")
+        return
+    st.session_state[f"saved_api_key_{provider}"] = ""
+    st.session_state[notice_key] = ("success", "已删除系统凭据库中保存的 API Key。")
 
 
 def api_model_name(provider: str, displayed_model: str) -> str:
@@ -59,7 +106,7 @@ def render_active_job() -> None:
 
     snapshot = job.snapshot()
     if snapshot.paused:
-        st.warning(f"已暂停 · {snapshot.stage}")
+        st.warning(f"已阻止后续请求，先前发出的请求可能仍在完成 · {snapshot.stage}")
     elif snapshot.pause_requested:
         st.info(f"等待当前请求完成后暂停 · {snapshot.stage}")
     else:
@@ -67,10 +114,60 @@ def render_active_job() -> None:
     st.caption("暂停会在下一次模型请求前生效；请保持页面和服务运行。")
 
 
+def extract_docx_body_xml(contents: bytes) -> str:
+    """Recover body text when a broken auxiliary DOCX relationship blocks python-docx."""
+    word = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
+
+    def paragraph_text(paragraph) -> str:
+        parts = []
+        for node in paragraph.iter():
+            if node.tag == f"{word}t":
+                parts.append(node.text or "")
+            elif node.tag == f"{word}tab":
+                parts.append("\t")
+            elif node.tag in (f"{word}br", f"{word}cr"):
+                parts.append("\n")
+        return "".join(parts).strip()
+
+    with ZipFile(BytesIO(contents)) as archive:
+        root = ElementTree.fromstring(archive.read("word/document.xml"))
+    body = root.find(f"{word}body")
+    if body is None:
+        raise ValueError("DOCX 正文不存在。")
+
+    lines = []
+    for block in body:
+        if block.tag == f"{word}p":
+            text = paragraph_text(block)
+            if text:
+                lines.append(text)
+        elif block.tag == f"{word}tbl":
+            for row in block.findall(f"{word}tr"):
+                cells = []
+                for cell in row.findall(f"{word}tc"):
+                    cell_text = "\n".join(
+                        text for paragraph in cell.iter(f"{word}p")
+                        if (text := paragraph_text(paragraph))
+                    )
+                    if cell_text:
+                        cells.append(cell_text)
+                if cells:
+                    lines.append("\t".join(cells))
+
+    if not lines:
+        raise ValueError("DOCX 文件中没有可读取的文字。图片或扫描件需要先进行文字识别。")
+    return "\n".join(lines)
+
+
 def extract_docx_text(contents: bytes) -> str:
     """Extract body paragraphs and table rows in document order."""
     try:
         document = Document(BytesIO(contents))
+    except KeyError:
+        try:
+            return extract_docx_body_xml(contents)
+        except (BadZipFile, KeyError, ElementTree.ParseError, ValueError) as exc:
+            raise ValueError("DOCX 文件结构异常，无法读取正文。请另存为新的 DOCX 后重试。") from exc
     except (BadZipFile, PackageNotFoundError) as exc:
         raise ValueError("DOCX 文件无法读取，请确认文件未损坏且格式正确。") from exc
 
@@ -100,6 +197,38 @@ def read_transcript(source: str, pasted_text: str, uploaded_file) -> str:
     return uploaded_file.getvalue().decode("utf-8-sig").strip()
 
 
+def build_result_docx(result: dict) -> bytes:
+    """Create a readable Word report containing the final themes and codes."""
+    document = Document()
+    document.add_heading("访谈主题分析报告", 0)
+    document.add_paragraph(f"分析编号：{result['session_name']}")
+    if result.get("timestamp"):
+        document.add_paragraph(f"分析时间：{result['timestamp']}")
+    model = result.get("configuration", {}).get("model")
+    if model:
+        document.add_paragraph(f"模型：{model}")
+    document.add_paragraph(f"状态：{'达到评估标准' if result['accepted'] else '已达到最大评估轮次'}")
+    document.add_paragraph(f"平均分：{result['metadata']['final_average_score']:.2f} / 5")
+    document.add_paragraph(f"评估轮次：{result['refinement_iterations']}")
+
+    themes = result["final_themes"]
+    document.add_heading(f"最终主题（{len(themes)}）", level=1)
+    if not themes:
+        document.add_paragraph("本次分析没有生成主题。")
+    for index, theme in enumerate(themes, 1):
+        document.add_heading(f"{index}. {theme['name']}", level=2)
+        document.add_paragraph(theme["description"])
+        codes = theme.get("codes", [])
+        if codes:
+            document.add_paragraph(f"关联编码（{len(codes)}）")
+            for code in codes:
+                document.add_paragraph(str(code), style="List Bullet")
+
+    buffer = BytesIO()
+    document.save(buffer)
+    return buffer.getvalue()
+
+
 def render_result(result: dict) -> None:
     """Display the latest analysis without exposing the API key."""
     st.divider()
@@ -116,13 +245,22 @@ def render_result(result: dict) -> None:
     theme_col.metric("主题数", len(themes))
     round_col.metric("评估轮次", result["refinement_iterations"])
 
+    st.subheader("保存结果")
     st.download_button(
-        "下载完整结果 JSON",
+        "保存 Word 报告（DOCX）",
+        data=build_result_docx(result),
+        file_name=f"{result['session_name']}.docx",
+        mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        use_container_width=True,
+    )
+    st.download_button(
+        "保存完整数据（JSON）",
         data=json.dumps(result, ensure_ascii=False, indent=2).encode("utf-8"),
         file_name=f"{result['session_name']}.json",
         mime="application/json",
+        use_container_width=True,
     )
-    st.caption(f"本地结果目录：{ROOT / 'outputs' / result['session_name']}")
+    st.caption(f"已自动保存到本机：{ROOT / 'outputs' / result['session_name']}")
 
     if not themes:
         st.info("本次分析没有生成主题。请检查输入文本和模型返回内容。")
@@ -153,8 +291,29 @@ def main() -> None:
         }
         provider = st.selectbox("服务商", list(providers), key="provider")
         env_name, default_model = providers[provider]
+        saved_api_key = load_saved_api_key(provider)
         api_key_input = st.text_input("API Key", type="password", key=f"api_key_{provider}")
-        st.caption(f"留空时读取本机环境变量 {env_name}")
+        if saved_api_key:
+            st.caption("已保存此服务商的 API Key；输入框留空时自动使用。")
+        else:
+            st.caption(f"留空时读取本机环境变量 {env_name}")
+        st.button(
+            "保存 API Key", key="save_api_key", on_click=save_api_key,
+            args=(provider,), disabled=running, use_container_width=True,
+        )
+        st.button(
+            "删除已保存 Key", key="delete_saved_api_key", on_click=delete_saved_api_key,
+            args=(provider,), disabled=running or not saved_api_key, use_container_width=True,
+        )
+        notice = st.session_state.pop(f"api_key_notice_{provider}", None)
+        if notice:
+            kind, message = notice
+            if kind == "success":
+                st.success(message)
+            elif kind == "warning":
+                st.warning(message)
+            else:
+                st.error(message)
 
         model_key = f"model_{provider}"
         if provider == "DeepSeek" and "deepseek_display_migrated" not in st.session_state:
@@ -182,7 +341,7 @@ def main() -> None:
                 key="deepseek_base_url",
             )
 
-        api_key = api_key_input.strip() or os.getenv(env_name, "").strip()
+        api_key = api_key_input.strip() or saved_api_key or os.getenv(env_name, "").strip()
         endpoint = base_url.strip() if base_url is not None else None
         st.caption("测试会发送一次简短模型请求，可能产生少量费用。")
         if st.button("测试 API 连接", key="test_api_connection", disabled=running):
@@ -206,6 +365,16 @@ def main() -> None:
 
         st.divider()
         st.header("运行设置")
+        chunk_size = st.number_input(
+            "初始切块大小（字词/块）", min_value=100, max_value=10000,
+            value=4000, step=100, key="chunk_size", disabled=running,
+            help="由 Generation Agent 切分访谈；中文按字，英文等文本按空格分词。数值越小，片段和模型请求通常越多。",
+        )
+        max_workers = st.number_input(
+            "并发请求数", min_value=1, max_value=8, value=4, step=1,
+            key="max_workers", disabled=running,
+            help="仅用于相互独立的片段编码和主题评估请求；遇到接口限流时可调低。",
+        )
         max_iterations = st.number_input("最多评估轮次", min_value=1, max_value=10, value=5)
         save_intermediate = st.checkbox(
             "保存阶段文件",
@@ -256,6 +425,8 @@ def main() -> None:
                         api_key=api_key,
                         model=api_model_name(provider, model),
                         base_url=endpoint,
+                        chunk_size=int(chunk_size),
+                        max_workers=int(max_workers),
                         max_iterations=int(max_iterations),
                         output_dir=str(ROOT / "outputs"),
                     )

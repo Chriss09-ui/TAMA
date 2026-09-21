@@ -78,11 +78,39 @@ provider's `MIMO_API_KEY`, `DEEPSEEK_API_KEY`, or `OPENAI_API_KEY` environment
 variable. Results appear on the page and are saved
 under `outputs/`. The app listens on `127.0.0.1` for local use.
 
+After analysis, use **保存 Word 报告（DOCX）** to download a readable report with
+the final themes, descriptions, and associated codes. Use **保存完整数据（JSON）**
+to download the complete result for later processing. The framework also
+automatically writes `00_final_results.json` and `00_summary.txt` in the
+session's `outputs/` directory.
+
+To keep an API key across browser and app restarts, enter it in the sidebar and
+click **保存 API Key**. The key is stored in the operating system credential store
+(macOS Keychain on macOS), separately for each provider, rather than in the
+repository or `outputs/`. Leave the field empty to use the saved key; click
+**删除已保存 Key** to remove it. A newly typed key takes precedence over a saved
+key, and a saved key takes precedence over the provider's environment variable.
+
 Use **测试 API 连接** in the sidebar to send one short request with the current
 key, model, and endpoint; the provider may charge for it. During analysis,
 **暂停分析** waits for any request already in progress to finish, then stops
 before the next model request. **继续分析** resumes the same run. Keep the
 browser page and local Streamlit service open while the analysis runs.
+
+Set **初始切块大小（字词/块）** in the sidebar before starting analysis. The
+Generation Agent uses it for the first transcript split (default: 4000 units):
+Chinese characters count individually, while other text is counted by
+whitespace-separated words. Punctuation and original spacing remain in each
+chunk. Smaller chunks generally mean more model requests. The selected value
+is recorded as `configuration.chunk_size` in the final JSON result.
+
+Independent code extraction requests and theme evaluations run concurrently.
+The sidebar's **并发请求数** defaults to 4 and can be set from 1 to 8; lower it
+if the model provider rate-limits requests. Results keep the original chunk
+and theme order. Theme generation still waits for all codes, and refinement
+waits for all evaluations. Pausing blocks requests that have not started yet;
+requests already sent to the provider may finish first. The selected limit is
+recorded as `configuration.max_workers` in the final JSON result.
 
 ## Key Features
 
