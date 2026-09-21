@@ -8,6 +8,7 @@ from typing import List, Dict, Any, Optional
 from openai import OpenAI
 from pydantic import BaseModel
 import json
+from concurrent.futures import ThreadPoolExecutor
 
 
 class EvaluationCriteria(BaseModel):
@@ -58,7 +59,8 @@ class EvaluationAgent:
         api_key: str,
         model: str = "gpt-4o",
         expert_criteria: Optional[Dict[str, str]] = None,
-        base_url: Optional[str] = None
+        base_url: Optional[str] = None,
+        max_workers: int = 4,
     ):
         """
         Initialize the Evaluation Agent.
@@ -68,9 +70,13 @@ class EvaluationAgent:
             model: Model to use (default: gpt-4o)
             expert_criteria: Optional study-specific evaluation criteria from a researcher
             base_url: Optional OpenAI-compatible API endpoint
+            max_workers: Maximum concurrent theme evaluation requests
         """
+        if max_workers < 1:
+            raise ValueError("max_workers must be positive")
         self.client = OpenAI(api_key=api_key, base_url=base_url)
         self.model = model
+        self.max_workers = max_workers
         self.before_model_call = None
 
         # Use expert-provided criteria or defaults
@@ -204,12 +210,17 @@ class EvaluationAgent:
             OverallEvaluation object
         """
         print("\nEvaluating themes...")
-        theme_evaluations = []
 
-        for idx, theme in enumerate(themes):
+        def evaluate_indexed(item):
+            idx, theme = item
             print(f"  Evaluating theme {idx + 1}/{len(themes)}: {theme['name']}")
-            evaluation = self.evaluate_theme(theme, themes, original_codes)
-            theme_evaluations.append(evaluation)
+            return self.evaluate_theme(theme, themes, original_codes)
+
+        if len(themes) > 1 and self.max_workers > 1:
+            with ThreadPoolExecutor(max_workers=min(self.max_workers, len(themes))) as executor:
+                theme_evaluations = list(executor.map(evaluate_indexed, enumerate(themes)))
+        else:
+            theme_evaluations = [evaluate_indexed(item) for item in enumerate(themes)]
 
         # Calculate average score
         average_score = sum(e.overall_score for e in theme_evaluations) / len(theme_evaluations)

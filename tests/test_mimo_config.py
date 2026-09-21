@@ -46,16 +46,19 @@ class MiMoConfigTests(unittest.TestCase):
                     api_key="mimo-test",
                     model="mimo-v2.5-pro",
                     output_dir=output_dir,
-                    base_url="https://api.xiaomimimo.com/v1"
+                    base_url="https://api.xiaomimimo.com/v1",
+                    chunk_size=600,
+                    max_workers=2,
                 )
 
         generation.assert_called_once_with(
             api_key="mimo-test", model="mimo-v2.5-pro",
-            base_url="https://api.xiaomimimo.com/v1"
+            base_url="https://api.xiaomimimo.com/v1", chunk_size=600,
+            max_workers=2,
         )
         evaluation.assert_called_once_with(
             api_key="mimo-test", model="mimo-v2.5-pro", expert_criteria=None,
-            base_url="https://api.xiaomimimo.com/v1"
+            base_url="https://api.xiaomimimo.com/v1", max_workers=2,
         )
         refinement.assert_called_once_with(
             api_key="mimo-test", model="mimo-v2.5-pro",

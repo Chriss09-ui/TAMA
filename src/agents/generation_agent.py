@@ -7,6 +7,8 @@ from typing import List, Dict, Any, Optional
 from openai import OpenAI
 from pydantic import BaseModel
 import json
+import re
+from concurrent.futures import ThreadPoolExecutor
 
 
 class Chunk(BaseModel):
@@ -34,12 +36,15 @@ class Theme(BaseModel):
 class GenerationAgent:
     """
     Generation Agent that processes interview transcripts through:
-    1. Chunking: Split transcripts into manageable segments (3-5k words per chunk)
+    1. Chunking: Split transcripts into manageable segments by Chinese characters and other words
     2. Coding: Extract concise codes from each chunk
     3. Theme Generation: Synthesize codes into concise themes
     """
 
-    def __init__(self, api_key: str, model: str = "gpt-4o", base_url: Optional[str] = None):
+    def __init__(
+        self, api_key: str, model: str = "gpt-4o", base_url: Optional[str] = None,
+        chunk_size: int = 4000, max_workers: int = 4,
+    ):
         """
         Initialize the Generation Agent.
 
@@ -47,15 +52,22 @@ class GenerationAgent:
             api_key: API key for the selected model provider
             model: Model to use (default: gpt-4o)
             base_url: Optional OpenAI-compatible API endpoint
+            chunk_size: Maximum Chinese characters or whitespace-separated words per chunk
+            max_workers: Maximum concurrent code extraction requests
         """
+        if chunk_size < 1:
+            raise ValueError("chunk_size must be positive")
+        if max_workers < 1:
+            raise ValueError("max_workers must be positive")
         self.client = OpenAI(api_key=api_key, base_url=base_url)
         self.model = model
-        self.chunk_size = 4000  # words per chunk (3-5k as per diagram)
+        self.chunk_size = chunk_size
+        self.max_workers = max_workers
         self.before_model_call = None
 
     def chunk_transcript(self, transcript: str) -> List[Chunk]:
         """
-        Split interview transcript into chunks of 3-5k words.
+        Split Chinese text by characters and other text by whitespace-separated words.
 
         Args:
             transcript: Full interview transcript text
@@ -63,19 +75,21 @@ class GenerationAgent:
         Returns:
             List of Chunk objects
         """
-        words = transcript.split()
+        units = list(re.finditer(r"[\u3400-\u9fff]|[^\s\u3400-\u9fff]+", transcript))
         chunks = []
         chunk_id = 0
 
-        for i in range(0, len(words), self.chunk_size):
-            chunk_words = words[i:i + self.chunk_size]
-            chunk_text = " ".join(chunk_words)
+        for i in range(0, len(units), self.chunk_size):
+            end = min(i + self.chunk_size, len(units))
+            start_offset = units[i].start()
+            end_offset = units[end].start() if end < len(units) else units[-1].end()
+            chunk_text = transcript[start_offset:end_offset].strip()
 
             chunks.append(Chunk(
                 chunk_id=chunk_id,
                 text=chunk_text,
                 start_word=i,
-                end_word=min(i + self.chunk_size, len(words))
+                end_word=end
             ))
             chunk_id += 1
 
@@ -152,9 +166,13 @@ class GenerationAgent:
         all_codes = []
         code_id = 0
 
-        for chunk in chunks:
-            chunk_codes = self.generate_codes_from_chunk(chunk)
+        if len(chunks) > 1 and self.max_workers > 1:
+            with ThreadPoolExecutor(max_workers=min(self.max_workers, len(chunks))) as executor:
+                code_batches = list(executor.map(self.generate_codes_from_chunk, chunks))
+        else:
+            code_batches = [self.generate_codes_from_chunk(chunk) for chunk in chunks]
 
+        for chunk_codes in code_batches:
             # Reassign code IDs to maintain global uniqueness
             for code in chunk_codes:
                 code.code_id = code_id

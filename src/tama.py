@@ -30,7 +30,9 @@ class TAMAFramework:
         acceptance_threshold: float = 4.0,
         output_dir: str = "outputs",
         expert_criteria: Optional[Dict[str, str]] = None,
-        base_url: Optional[str] = None
+        base_url: Optional[str] = None,
+        chunk_size: int = 4000,
+        max_workers: int = 4,
     ):
         """
         Initialize TAMA Framework.
@@ -43,6 +45,8 @@ class TAMAFramework:
             output_dir: Directory to save outputs (default: outputs)
             expert_criteria: Optional study-specific evaluation criteria from a researcher
             base_url: Optional OpenAI-compatible API endpoint
+            chunk_size: Maximum Chinese characters or other words per initial chunk
+            max_workers: Maximum concurrent code extraction and theme evaluation requests
         """
         self.api_key = api_key
         self.model = model
@@ -50,14 +54,20 @@ class TAMAFramework:
         self.acceptance_threshold = acceptance_threshold
         self.output_dir = output_dir
         self.expert_criteria = expert_criteria
+        self.chunk_size = chunk_size
+        self.max_workers = max_workers
 
         # Initialize agents
-        self.generation_agent = GenerationAgent(api_key=api_key, model=model, base_url=base_url)
+        self.generation_agent = GenerationAgent(
+            api_key=api_key, model=model, base_url=base_url,
+            chunk_size=chunk_size, max_workers=max_workers,
+        )
         self.evaluation_agent = EvaluationAgent(
             api_key=api_key,
             model=model,
             expert_criteria=expert_criteria,
-            base_url=base_url
+            base_url=base_url,
+            max_workers=max_workers,
         )
         self.refinement_agent = RefinementAgent(api_key=api_key, model=model, base_url=base_url)
 
@@ -193,6 +203,8 @@ class TAMAFramework:
             "configuration": {
                 "model": self.model,
                 "max_iterations": self.max_iterations,
+                "chunk_size": self.chunk_size,
+                "max_workers": self.max_workers,
                 "acceptance_threshold": self.acceptance_threshold,
                 "expert_criteria": self.expert_criteria
             },
