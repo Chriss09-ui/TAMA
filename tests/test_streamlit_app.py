@@ -5,6 +5,7 @@ import unittest
 from io import BytesIO
 from pathlib import Path
 from threading import Event
+from types import SimpleNamespace
 from unittest.mock import ANY, patch
 from xml.etree import ElementTree
 from zipfile import ZipFile
@@ -112,6 +113,10 @@ class StreamlitAppTests(unittest.TestCase):
             "session_name": "report-test", "accepted": True,
             "metadata": {"final_average_score": 4.25},
             "refinement_iterations": 1,
+            "final_evaluation": {
+                "global_feedback": "主题整体达标，但有一项置信度偏低。",
+                "flagged_themes": ["工作方式变化"],
+            },
             "final_themes": [{
                 "name": "工作方式变化", "description": "受访者描述了远程办公。",
                 "codes": ["通勤时间减少", "线上沟通增加"],
@@ -121,7 +126,7 @@ class StreamlitAppTests(unittest.TestCase):
         document = Document(BytesIO(build_result_docx(result)))
         paragraphs = "\n".join(paragraph.text for paragraph in document.paragraphs)
         for expected in ("访谈主题分析报告", "工作方式变化", "受访者描述了远程办公。",
-                         "通勤时间减少", "线上沟通增加"):
+                         "通勤时间减少", "线上沟通增加", "建议人工复核"):
             self.assertIn(expected, paragraphs)
 
     def test_result_page_offers_word_and_json_saves(self):
@@ -129,6 +134,10 @@ class StreamlitAppTests(unittest.TestCase):
             "session_name": "report-test", "accepted": True,
             "metadata": {"final_average_score": 4.25},
             "refinement_iterations": 1, "final_themes": [],
+            "final_evaluation": {
+                "global_feedback": "主题已达标，但建议复核。",
+                "flagged_themes": ["主题甲"],
+            },
         }
         with patch.dict(os.environ, {}, clear=True), patch("streamlit.download_button") as download:
             app = AppTest.from_file(str(APP_PATH))
@@ -141,6 +150,7 @@ class StreamlitAppTests(unittest.TestCase):
         ])
         self.assertEqual(download.call_args_list[0].kwargs["file_name"], "report-test.docx")
         self.assertEqual(json.loads(download.call_args_list[1].kwargs["data"]), result)
+        self.assertIn("主题甲", app.warning[0].value)
 
     def test_empty_transcript_shows_validation_error(self):
         with patch.dict(os.environ, {}, clear=True):
@@ -183,6 +193,8 @@ class StreamlitAppTests(unittest.TestCase):
             chunk_size=600,
             max_workers=2,
             max_iterations=5,
+            decision_provider=None,
+            confidence_threshold=0.7,
             output_dir=str(ROOT / "outputs"),
         )
         framework.return_value.run_analysis.assert_called_once_with(
@@ -218,6 +230,8 @@ class StreamlitAppTests(unittest.TestCase):
             chunk_size=4000,
             max_workers=4,
             max_iterations=5,
+            decision_provider=None,
+            confidence_threshold=0.7,
             output_dir=str(ROOT / "outputs"),
         )
         framework.return_value.run_analysis.assert_called_once_with(
@@ -353,6 +367,7 @@ class StreamlitAppTests(unittest.TestCase):
             api_key="saved-test-key", model="deepseek-flash",
             base_url="https://api.deepseek.com", chunk_size=4000,
             max_workers=4, max_iterations=5,
+            decision_provider=None, confidence_threshold=0.7,
             output_dir=str(ROOT / "outputs"),
         )
 
@@ -413,6 +428,69 @@ class StreamlitAppTests(unittest.TestCase):
         self.assertIn("错误类型：TypeError", captions)
         self.assertIn("错误位置：", captions)
         self.assertNotIn("secret-api-key", captions)
+
+    def test_jev_mode_without_env_key_blocks_analysis(self):
+        with patch.dict(os.environ, {}, clear=True), patch("tama.TAMAFramework") as framework:
+            app = AppTest.from_file(str(APP_PATH)).run()
+            app.selectbox(key="decision_mode").set_value("Jev（实验性）").run()
+            app.text_area(key="transcript_text").set_value("测试访谈").run()
+            app.text_input(key="api_key_DeepSeek").set_value("test-key").run()
+            app.button(key="run_analysis").click().run()
+
+        self.assertFalse(app.exception)
+        self.assertIn("JEV_API_KEY", app.error[0].value)
+        framework.assert_not_called()
+
+    def test_jev_mode_builds_jev_decision_client(self):
+        result = {
+            "session_name": "jev-test", "accepted": True,
+            "metadata": {"final_average_score": 4.0},
+            "refinement_iterations": 1, "final_themes": [],
+        }
+        with patch.dict(os.environ, {"JEV_API_KEY": "jev-test"}, clear=True), \
+                patch("tama.TAMAFramework") as framework, \
+                patch("decisions.jev_client.JevDecisionClient") as jev_client_cls:
+            framework.return_value.run_analysis.return_value = result
+            app = AppTest.from_file(str(APP_PATH)).run()
+            app.selectbox(key="decision_mode").set_value("Jev（实验性）").run()
+            app.text_area(key="transcript_text").set_value("测试访谈").run()
+            app.text_input(key="api_key_DeepSeek").set_value("test-key").run()
+            app.button(key="run_analysis").click().run()
+            self.assertTrue(app.session_state["analysis_job"].done.wait(2))
+            app.run()
+
+        self.assertFalse(app.exception)
+        jev_client_cls.assert_called_once_with(api_key="jev-test", base_url=None, model=None)
+        framework.assert_called_once_with(
+            api_key="test-key", model="deepseek-flash",
+            base_url="https://api.deepseek.com", chunk_size=4000,
+            max_workers=4, max_iterations=5,
+            decision_provider=jev_client_cls.return_value,
+            confidence_threshold=0.7,
+            output_dir=str(ROOT / "outputs"),
+        )
+
+    def test_jev_connection_test_sends_noul_request(self):
+        with patch.dict(os.environ, {"JEV_API_KEY": "jev-test"}, clear=True), \
+                patch("openai.OpenAI") as main_client, \
+                patch("decisions.jev_client.JevDecisionClient") as jev_client_cls:
+            main_client.return_value.chat.completions.create.return_value.choices = [object()]
+            jev_client_cls.return_value.ask.return_value = {
+                "check": SimpleNamespace(probability=0.99),
+            }
+            app = AppTest.from_file(str(APP_PATH)).run()
+            app.selectbox(key="decision_mode").set_value("Jev（实验性）").run()
+            app.text_input(key="api_key_DeepSeek").set_value("test-key").run()
+            app.button(key="test_api_connection").click().run()
+
+        self.assertFalse(app.exception)
+        self.assertIn("连接成功", app.success[0].value)
+        jev_client_cls.assert_called_once_with(
+            api_key="jev-test", base_url=None, timeout=20.0, max_retries=0,
+        )
+        state, questions = jev_client_cls.return_value.ask.call_args.args
+        self.assertEqual(state, "连接测试")
+        self.assertEqual(questions["check"].kind, "noul")
 
 
 if __name__ == "__main__":

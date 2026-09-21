@@ -3,7 +3,7 @@ import sys
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -11,6 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from agents.evaluation_agent import EvaluationAgent
 from agents.generation_agent import Chunk, Code, GenerationAgent
 from agents.refinement_agent import RefinementAgent
+from decisions.base import DecisionAnswer
 
 
 def fake_response(data):
@@ -56,25 +57,39 @@ class GenericPromptTests(unittest.TestCase):
         self.assertIn('"name"', theme_prompt)
 
     def test_evaluation_prompt_uses_generic_criteria(self):
-        agent = EvaluationAgent(api_key="test")
-        agent.client = Mock()
-        stages = []
-        agent.before_model_call = stages.append
-        agent.client.chat.completions.create.return_value = fake_response({
-            "coverage_score": 4, "coverage_feedback": "涵盖主要编码",
-            "actionability_score": 4, "actionability_feedback": "概念明确",
-            "distinctiveness_score": 4, "distinctiveness_feedback": "区别清晰",
-            "relevance_score": 4, "relevance_feedback": "有编码支持",
-            "needs_refinement": False, "refinement_suggestions": []
-        })
-        theme = {"name": "日常安排", "description": "日常出行的调整。", "codes": ["通勤安排的变化"]}
-        agent.evaluate_theme(theme, [theme], [{"description": "通勤安排的变化"}])
-        self.assertEqual(stages, ["评估主题 · 日常安排"])
+        # Hybrid evaluation scores via the decision client, then the mocked
+        # main model writes feedback; the generic-prompt assertions apply to
+        # that feedback call.
+        with patch("agents.evaluation_agent.LLMDecisionClient") as decision_client_cls:
+            provider = decision_client_cls.return_value
+            provider.ask.return_value = {
+                "coverage": DecisionAnswer(key="coverage", kind="score", score=2.0, confidence=0.9),
+                "actionability": DecisionAnswer(key="actionability", kind="score", score=3.0, confidence=0.9),
+                "distinctiveness": DecisionAnswer(key="distinctiveness", kind="score", score=3.0, confidence=0.9),
+                "relevance": DecisionAnswer(key="relevance", kind="score", score=3.0, confidence=0.9),
+                "needs_refinement": DecisionAnswer(
+                    key="needs_refinement", kind="noul", probability=0.4, confidence=0.8,
+                ),
+            }
+            agent = EvaluationAgent(api_key="test")
+            agent.client = Mock()
+            stages = []
+            agent.before_model_call = stages.append
+            agent.client.chat.completions.create.return_value = fake_response({
+                "coverage_feedback": "涵盖主要编码",
+                "actionability_feedback": "概念明确",
+                "distinctiveness_feedback": "区别清晰",
+                "relevance_feedback": "有编码支持",
+                "needs_refinement": False, "refinement_suggestions": []
+            })
+            theme = {"name": "日常安排", "description": "日常出行的调整。", "codes": ["通勤安排的变化"]}
+            agent.evaluate_theme(theme, [theme], [{"description": "通勤安排的变化"}])
+        self.assertEqual(stages, ["评估主题 · 日常安排", "生成评估反馈 · 日常安排"])
         self.assert_generic_prompt(agent.client)
         self.assertIn("提供的编码", agent.criteria.relevance)
-        evaluation_prompt = agent.client.chat.completions.create.call_args.kwargs["messages"][1]["content"]
-        self.assertIn('"coverage_score"', evaluation_prompt)
-        self.assertIn('"needs_refinement"', evaluation_prompt)
+        feedback_prompt = agent.client.chat.completions.create.call_args.kwargs["messages"][1]["content"]
+        self.assertIn('"coverage_feedback"', feedback_prompt)
+        self.assertIn('"needs_refinement"', feedback_prompt)
 
     def test_refinement_prompt_stays_grounded_and_uses_source_language(self):
         agent = RefinementAgent(api_key="test")

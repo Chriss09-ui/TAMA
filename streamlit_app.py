@@ -21,6 +21,10 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from tama import TAMAFramework
 from analysis_job import AnalysisJob
+from decisions import DecisionQuestion
+from decisions.jev_client import JevDecisionClient
+
+JEV_DECISION_MODE = "Jev（实验性）"
 
 KEYRING_SERVICE = "TAMA Qualitative Analysis"
 
@@ -87,6 +91,20 @@ def check_api_connection(api_key: str, model: str, base_url: str | None, provide
     )
     if not response.choices:
         raise ValueError("模型返回空结果")
+
+
+def check_jev_connection(api_key: str, base_url: str | None) -> None:
+    """Send one minimal yes/no decision to the Jev System One endpoint."""
+    client = JevDecisionClient(api_key=api_key, base_url=base_url, timeout=20.0, max_retries=0)
+    answers = client.ask("连接测试", {
+        "check": DecisionQuestion(
+            key="check", kind="noul",
+            instructions="这是一次连接测试。请回答：1+1 是否等于 2？",
+        ),
+    })
+    answer = answers["check"]
+    if answer.probability is None or answer.probability < 0.5:
+        raise ValueError("模型返回异常结果")
 
 
 @st.fragment(run_every="1s")
@@ -211,6 +229,17 @@ def build_result_docx(result: dict) -> bytes:
     document.add_paragraph(f"平均分：{result['metadata']['final_average_score']:.2f} / 5")
     document.add_paragraph(f"评估轮次：{result['refinement_iterations']}")
 
+    final_evaluation = result.get("final_evaluation") or {}
+    global_feedback = final_evaluation.get("global_feedback")
+    flagged_themes = final_evaluation.get("flagged_themes", [])
+    if global_feedback:
+        document.add_heading("最终评估", level=1)
+        document.add_paragraph(global_feedback)
+    if flagged_themes:
+        document.add_paragraph(
+            f"建议人工复核（{len(flagged_themes)}）：{'、'.join(flagged_themes)}"
+        )
+
     themes = result["final_themes"]
     document.add_heading(f"最终主题（{len(themes)}）", level=1)
     if not themes:
@@ -244,6 +273,15 @@ def render_result(result: dict) -> None:
     score_col.metric("平均分", f"{score:.2f} / 5")
     theme_col.metric("主题数", len(themes))
     round_col.metric("评估轮次", result["refinement_iterations"])
+
+    final_evaluation = result.get("final_evaluation") or {}
+    if final_evaluation.get("global_feedback"):
+        st.info(final_evaluation["global_feedback"])
+    flagged_themes = final_evaluation.get("flagged_themes", [])
+    if flagged_themes:
+        st.warning(
+            f"建议人工复核 {len(flagged_themes)} 个主题：{'、'.join(flagged_themes)}"
+        )
 
     st.subheader("保存结果")
     st.download_button(
@@ -343,6 +381,7 @@ def main() -> None:
 
         api_key = api_key_input.strip() or saved_api_key or os.getenv(env_name, "").strip()
         endpoint = base_url.strip() if base_url is not None else None
+        decision_mode = st.session_state.get("decision_mode", "跟随主模型")
         st.caption("测试会发送一次简短模型请求，可能产生少量费用。")
         if st.button("测试 API 连接", key="test_api_connection", disabled=running):
             if not api_key:
@@ -351,10 +390,18 @@ def main() -> None:
                 st.error("请填写模型名称。")
             elif base_url is not None and not endpoint:
                 st.error("请填写接口地址。")
+            elif decision_mode == JEV_DECISION_MODE and not os.getenv("JEV_API_KEY", "").strip():
+                st.error("决策模式为 Jev 时，请先设置 JEV_API_KEY 环境变量。")
             else:
                 try:
                     with st.spinner("正在测试模型接口……"):
                         check_api_connection(api_key, model.strip(), endpoint, provider)
+                    if decision_mode == JEV_DECISION_MODE:
+                        with st.spinner("正在测试决策接口……"):
+                            check_jev_connection(
+                                os.getenv("JEV_API_KEY", "").strip(),
+                                os.getenv("JEV_BASE_URL"),
+                            )
                 except APIStatusError as exc:
                     st.error(f"连接失败 · HTTP {exc.status_code}，请检查密钥、地址和模型名称。")
                 except Exception as exc:
@@ -365,6 +412,13 @@ def main() -> None:
 
         st.divider()
         st.header("运行设置")
+        decision_mode = st.selectbox(
+            "决策模式", ["跟随主模型", JEV_DECISION_MODE], key="decision_mode",
+            disabled=running,
+            help="跟随主模型：主模型以 JSON 模式给出评分与置信度；Jev：使用 TypeSafe Jev 决策接口（需设置 JEV_API_KEY）。",
+        )
+        if decision_mode == JEV_DECISION_MODE:
+            st.caption("使用 Jev 需设置环境变量 JEV_API_KEY；可选 JEV_BASE_URL、JEV_MODEL。")
         chunk_size = st.number_input(
             "初始切块大小（字词/块）", min_value=100, max_value=10000,
             value=4000, step=100, key="chunk_size", disabled=running,
@@ -381,6 +435,12 @@ def main() -> None:
             value=False,
             help="包含文本片段、编码及逐轮评估，保存在本机 outputs 目录。",
         )
+        with st.expander("高级设置"):
+            confidence_threshold = st.number_input(
+                "置信度阈值", min_value=0.05, max_value=1.0, value=0.7, step=0.05,
+                key="confidence_threshold", disabled=running,
+                help="评估判断的置信度低于该值时，会请求详细反馈并在结果中标记为建议人工复核。",
+            )
 
     st.caption("TAMA / THEMATIC ANALYSIS")
     st.title("访谈主题分析")
@@ -419,7 +479,17 @@ def main() -> None:
                 st.error("请填写模型名称。")
             elif base_url is not None and not endpoint:
                 st.error("请填写接口地址。")
+            elif decision_mode == JEV_DECISION_MODE and not os.getenv("JEV_API_KEY", "").strip():
+                st.error("决策模式为 Jev 时，请先设置 JEV_API_KEY 环境变量。")
             else:
+                decision_provider = None
+                if decision_mode == JEV_DECISION_MODE:
+                    decision_provider = JevDecisionClient(
+                        api_key=os.getenv("JEV_API_KEY", "").strip(),
+                        base_url=os.getenv("JEV_BASE_URL") or None,
+                        model=os.getenv("JEV_MODEL") or None,
+                    )
+
                 def run(checkpoint):
                     framework = TAMAFramework(
                         api_key=api_key,
@@ -428,6 +498,8 @@ def main() -> None:
                         chunk_size=int(chunk_size),
                         max_workers=int(max_workers),
                         max_iterations=int(max_iterations),
+                        decision_provider=decision_provider,
+                        confidence_threshold=float(confidence_threshold),
                         output_dir=str(ROOT / "outputs"),
                     )
                     return framework.run_analysis(

@@ -30,8 +30,15 @@ TAMA/
 │   ├── agents/                     # Multi-agent components
 │   │   ├── __init__.py
 │   │   ├── generation_agent.py    # Generation Agent (Chunk → Code → Theme)
-│   │   ├── evaluation_agent.py    # Evaluation Agent (4 criteria)
+│   │   ├── evaluation_agent.py    # Evaluation Agent (4 criteria, hybrid scoring)
 │   │   └── refinement_agent.py    # Refinement Agent (Add/Split/Combine/Delete)
+│   │
+│   ├── decisions/                  # Decision provider layer (typed probabilistic decisions)
+│   │   ├── __init__.py
+│   │   ├── base.py                # DecisionProvider ABC, error type, state type
+│   │   ├── models.py              # DecisionQuestion / DecisionAnswer
+│   │   ├── llm_client.py          # JSON-mode LLM client (default, works with all providers)
+│   │   └── jev_client.py          # TypeSafe Jev System One HTTP client
 │   │
 │   └── utils/                      # Utility functions
 │       └── __init__.py
@@ -67,6 +74,7 @@ TAMA/
 | `src/agents/generation_agent.py` | Chunks transcripts, extracts codes, generates themes |
 | `src/agents/evaluation_agent.py` | Evaluates themes on 4 criteria, provides feedback |
 | `src/agents/refinement_agent.py` | Refines themes using Add/Split/Combine/Delete |
+| `src/decisions/` | Decision provider layer: typed scores/classifications with confidence |
 
 ### Configuration
 

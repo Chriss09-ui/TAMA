@@ -11,6 +11,7 @@ import json
 from agents.generation_agent import GenerationAgent
 from agents.evaluation_agent import EvaluationAgent
 from agents.refinement_agent import RefinementAgent
+from decisions.base import DecisionProvider
 
 
 class TAMAFramework:
@@ -33,6 +34,8 @@ class TAMAFramework:
         base_url: Optional[str] = None,
         chunk_size: int = 4000,
         max_workers: int = 4,
+        decision_provider: Optional[DecisionProvider] = None,
+        confidence_threshold: float = 0.7,
     ):
         """
         Initialize TAMA Framework.
@@ -47,6 +50,8 @@ class TAMAFramework:
             base_url: Optional OpenAI-compatible API endpoint
             chunk_size: Maximum Chinese characters or other words per initial chunk
             max_workers: Maximum concurrent code extraction and theme evaluation requests
+            decision_provider: Optional typed-decision provider; the main model is used when omitted
+            confidence_threshold: Decision confidence below this flags a theme for human review
         """
         self.api_key = api_key
         self.model = model
@@ -56,6 +61,8 @@ class TAMAFramework:
         self.expert_criteria = expert_criteria
         self.chunk_size = chunk_size
         self.max_workers = max_workers
+        self.decision_provider = decision_provider
+        self.confidence_threshold = confidence_threshold
 
         # Initialize agents
         self.generation_agent = GenerationAgent(
@@ -68,6 +75,8 @@ class TAMAFramework:
             expert_criteria=expert_criteria,
             base_url=base_url,
             max_workers=max_workers,
+            decision_provider=decision_provider,
+            confidence_threshold=confidence_threshold,
         )
         self.refinement_agent = RefinementAgent(api_key=api_key, model=model, base_url=base_url)
 
@@ -206,7 +215,12 @@ class TAMAFramework:
                 "chunk_size": self.chunk_size,
                 "max_workers": self.max_workers,
                 "acceptance_threshold": self.acceptance_threshold,
-                "expert_criteria": self.expert_criteria
+                "expert_criteria": self.expert_criteria,
+                "decision_provider": (
+                    self.decision_provider.name
+                    if self.decision_provider else f"llm:{self.model}"
+                ),
+                "confidence_threshold": self.confidence_threshold,
             },
             "generation": {
                 "num_chunks": len(generation_result["chunks"]),
@@ -216,7 +230,7 @@ class TAMAFramework:
             "refinement_iterations": iteration,
             "refinement_history": refinement_history,
             "final_themes": themes,
-            "final_evaluation": evaluation_result if not is_acceptable and iteration >= self.max_iterations else None,
+            "final_evaluation": evaluation_result,
             "accepted": is_acceptable,
             "metadata": {
                 "total_themes": len(themes),

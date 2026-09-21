@@ -10,6 +10,19 @@ import sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'src'))
 
 from tama import TAMAFramework, load_transcript
+from decisions.jev_client import JevDecisionClient
+
+
+def get_decision_provider():
+    """Prefer the Jev decision API when JEV_API_KEY is set; otherwise the main model decides."""
+    jev_api_key = os.getenv("JEV_API_KEY", "").strip()
+    if jev_api_key:
+        return JevDecisionClient(
+            api_key=jev_api_key,
+            base_url=os.getenv("JEV_BASE_URL") or None,
+            model=os.getenv("JEV_MODEL") or None,
+        )
+    return None
 
 
 def get_model_config():
@@ -64,7 +77,8 @@ def main():
         max_iterations=5,  # Maximum refinement iterations
         acceptance_threshold=4.0,  # Minimum score (out of 5) to accept themes
         output_dir="outputs",  # Directory to save results
-        expert_criteria=expert_criteria  # Optional custom criteria
+        expert_criteria=expert_criteria,  # Optional custom criteria
+        decision_provider=get_decision_provider(),  # Optional Jev decision provider
     )
 
     # Check if transcript exists

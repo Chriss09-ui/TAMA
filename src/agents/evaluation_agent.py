@@ -8,7 +8,11 @@ from typing import List, Dict, Any, Optional
 from openai import OpenAI
 from pydantic import BaseModel
 import json
+import math
 from concurrent.futures import ThreadPoolExecutor
+
+from decisions.base import DecisionProvider, DecisionQuestion
+from decisions.llm_client import LLMDecisionClient
 
 
 class EvaluationCriteria(BaseModel):
@@ -33,6 +37,13 @@ class EvaluationResult(BaseModel):
     overall_score: float
     needs_refinement: bool
     refinement_suggestions: List[str]
+    # Decision-layer audit fields (populated when a decision provider scored
+    # the theme; None keeps legacy single-call results unchanged)
+    score_confidences: Optional[Dict[str, float]] = None
+    needs_refinement_confidence: Optional[float] = None
+    raw_scores: Optional[Dict[str, float]] = None
+    flagged_for_review: bool = False
+    feedback_source: str = "llm"  # "llm" | "placeholder" | "fallback"
 
 
 class OverallEvaluation(BaseModel):
@@ -61,6 +72,8 @@ class EvaluationAgent:
         expert_criteria: Optional[Dict[str, str]] = None,
         base_url: Optional[str] = None,
         max_workers: int = 4,
+        decision_provider: Optional[DecisionProvider] = None,
+        confidence_threshold: float = 0.7,
     ):
         """
         Initialize the Evaluation Agent.
@@ -71,12 +84,22 @@ class EvaluationAgent:
             expert_criteria: Optional study-specific evaluation criteria from a researcher
             base_url: Optional OpenAI-compatible API endpoint
             max_workers: Maximum concurrent theme evaluation requests
+            decision_provider: Optional typed-decision provider for hybrid scoring
+            confidence_threshold: Decision confidence below this flags a theme for human review
         """
         if max_workers < 1:
             raise ValueError("max_workers must be positive")
+        if not 0 < confidence_threshold <= 1:
+            raise ValueError("confidence_threshold must be in (0, 1]")
         self.client = OpenAI(api_key=api_key, base_url=base_url)
         self.model = model
         self.max_workers = max_workers
+        if decision_provider is None:
+            # Default decision path: the main model answers typed questions
+            # in JSON mode, so hybrid evaluation works with every provider.
+            decision_provider = LLMDecisionClient(api_key=api_key, model=model, base_url=base_url)
+        self.decision_provider = decision_provider
+        self.confidence_threshold = confidence_threshold
         self.before_model_call = None
 
         # Use expert-provided criteria or defaults
@@ -93,6 +116,218 @@ class EvaluationAgent:
     ) -> EvaluationResult:
         """
         Evaluate a single theme against the four criteria.
+
+        With a decision provider, scores come from typed decisions and the
+        detailed feedback call only runs for themes that need attention.
+
+        Args:
+            theme: Theme dictionary to evaluate
+            all_themes: List of all themes for distinctiveness check
+            original_codes: Original codes for coverage check
+
+        Returns:
+            EvaluationResult object
+        """
+        if self.decision_provider is not None:
+            return self._evaluate_theme_with_decisions(theme, all_themes, original_codes)
+        return self._evaluate_theme_full(theme, all_themes, original_codes)
+
+    def _evaluate_theme_with_decisions(
+        self,
+        theme: Dict[str, Any],
+        all_themes: List[Dict[str, Any]],
+        original_codes: List[Dict[str, Any]]
+    ) -> EvaluationResult:
+        """Score the theme with typed decisions; write feedback only when needed."""
+        other_themes = [t for t in all_themes if t["name"] != theme["name"]]
+        state = {
+            "theme": {
+                "name": theme["name"],
+                "description": theme["description"],
+                "codes": theme.get("codes", []),
+            },
+            "other_themes": [
+                {"name": t["name"], "description": t["description"]} for t in other_themes
+            ],
+            "original_codes": [code["description"] for code in original_codes],
+        }
+        scale = ["1 分：较差", "2 分：较弱", "3 分：一般", "4 分：良好", "5 分：优秀"]
+        questions = {
+            "coverage": DecisionQuestion(
+                key="coverage", kind="score", scale=scale,
+                instructions=f"评估主题的覆盖度：{self.criteria.coverage}。只依据材料评分，不编造依据。",
+            ),
+            "actionability": DecisionQuestion(
+                key="actionability", kind="score", scale=scale,
+                instructions=f"评估主题的概念清晰度：{self.criteria.actionability}。",
+            ),
+            "distinctiveness": DecisionQuestion(
+                key="distinctiveness", kind="score", scale=scale,
+                instructions=f"评估主题的区分度：{self.criteria.distinctiveness}。结合其他主题判断重叠程度。",
+            ),
+            "relevance": DecisionQuestion(
+                key="relevance", kind="score", scale=scale,
+                instructions=f"评估主题的相关性：{self.criteria.relevance}。编码不足以支持判断时给出较低评分，并指出证据缺口。",
+            ),
+            "needs_refinement": DecisionQuestion(
+                key="needs_refinement", kind="noul",
+                instructions="综合四项标准判断：该主题是否需要修订？",
+            ),
+        }
+
+        if self.before_model_call:
+            self.before_model_call(f"评估主题 · {theme['name']}")
+        try:
+            answers = self.decision_provider.ask(state, questions)
+        except Exception as exc:
+            if getattr(exc, "permanent", False):
+                raise
+            print(f"  决策调用失败，回退到完整评估（{type(exc).__name__}）")
+            fallback = self._evaluate_theme_full(
+                theme, all_themes, original_codes,
+                stage=f"完整评估 · {theme['name']}",
+            )
+            fallback.feedback_source = "fallback"
+            return fallback
+
+        score_keys = ("coverage", "actionability", "distinctiveness", "relevance")
+        scores = {}
+        raw_scores = {}
+        confidences = {}
+        for key in score_keys:
+            raw = answers[key].score if answers[key].score is not None else 0.0
+            # Answers carry a zero-based weighted level index; convert half-up
+            # to the 1-5 rating used across the framework.
+            scores[key] = min(5, max(1, math.floor(raw + 0.5) + 1))
+            raw_scores[key] = raw
+            confidences[key] = answers[key].confidence
+        needs_refinement = (answers["needs_refinement"].probability or 0.0) >= 0.5
+        needs_refinement_confidence = answers["needs_refinement"].confidence
+        confidences["needs_refinement"] = needs_refinement_confidence
+        flagged_for_review = any(
+            value < self.confidence_threshold for value in confidences.values()
+        )
+        overall_score = sum(scores.values()) / 4.0
+
+        needs_detail = (
+            needs_refinement
+            or any(scores[key] < 4 for key in score_keys)
+            or flagged_for_review
+        )
+        if needs_detail:
+            if self.before_model_call:
+                self.before_model_call(f"生成评估反馈 · {theme['name']}")
+            feedback = self._generate_detailed_feedback(theme, other_themes, original_codes, scores)
+            needs_refinement = feedback["needs_refinement"]
+            feedback_source = "llm"
+        else:
+            feedback = {
+                key: f"该项评分 {scores[key]}/5，达到标准；快速评估未生成详细反馈。"
+                for key in score_keys
+            }
+            feedback["refinement_suggestions"] = []
+            needs_refinement = False
+            feedback_source = "placeholder"
+
+        return EvaluationResult(
+            theme_name=theme["name"],
+            coverage_score=scores["coverage"],
+            coverage_feedback=feedback["coverage"],
+            actionability_score=scores["actionability"],
+            actionability_feedback=feedback["actionability"],
+            distinctiveness_score=scores["distinctiveness"],
+            distinctiveness_feedback=feedback["distinctiveness"],
+            relevance_score=scores["relevance"],
+            relevance_feedback=feedback["relevance"],
+            overall_score=overall_score,
+            needs_refinement=needs_refinement,
+            refinement_suggestions=feedback["refinement_suggestions"],
+            score_confidences=confidences,
+            needs_refinement_confidence=needs_refinement_confidence,
+            raw_scores=raw_scores,
+            flagged_for_review=flagged_for_review,
+            feedback_source=feedback_source,
+        )
+
+    def _generate_detailed_feedback(
+        self,
+        theme: Dict[str, Any],
+        other_themes: List[Dict[str, Any]],
+        original_codes: List[Dict[str, Any]],
+        scores: Dict[str, int],
+    ) -> Dict[str, Any]:
+        """Ask the main model for feedback text on already-scored criteria."""
+        other_themes_text = "\n".join([f"- {t['name']}: {t['description']}" for t in other_themes])
+        codes_text = "\n".join([f"- {code['description']}" for code in original_codes])
+        theme_codes_text = "\n".join([f"- {code}" for code in theme.get("codes", [])])
+
+        prompt = f"""你是一名质性研究者，正在为主题评估撰写具体反馈。
+评分已由评估流程给出，直接采用，不重新评分。
+
+主题「{theme['name']}」的评分结果：
+- 覆盖度：{scores['coverage']}/5
+- 概念清晰度：{scores['actionability']}/5
+- 区分度：{scores['distinctiveness']}/5
+- 相关性：{scores['relevance']}/5
+
+待评估主题：
+名称：{theme['name']}
+描述：{theme['description']}
+关联编码：
+{theme_codes_text}
+
+其他主题（用于比较区分度）：
+{other_themes_text}
+
+原始编码：
+{codes_text}
+
+要求：
+- 每项标准的反馈需解释评分依据，低于 4 分的标准给出改进建议
+- 如果编码不足以支持某项判断，指出证据缺口，不编造依据
+- 重新判断该主题是否需要修订，并给出具体修订建议列表
+- 反馈使用与主题和编码相同的语言
+
+只返回符合以下结构的 JSON 对象，不添加解释或 Markdown；保留英文键名：
+{{
+  "coverage_feedback": "覆盖度的具体反馈",
+  "actionability_feedback": "概念清晰度的具体反馈",
+  "distinctiveness_feedback": "区分度的具体反馈",
+  "relevance_feedback": "相关性的具体反馈",
+  "needs_refinement": false,
+  "refinement_suggestions": []
+}}
+"""
+
+        response = self.client.chat.completions.create(
+            model=self.model,
+            messages=[
+                {"role": "system", "content": "你是一名质性研究者。仅依据提供的材料和评分撰写评估反馈。"},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.2,
+            response_format={"type": "json_object"}
+        )
+        result = json.loads(response.choices[0].message.content)
+        return {
+            "coverage": result["coverage_feedback"],
+            "actionability": result["actionability_feedback"],
+            "distinctiveness": result["distinctiveness_feedback"],
+            "relevance": result["relevance_feedback"],
+            "needs_refinement": bool(result["needs_refinement"]),
+            "refinement_suggestions": result.get("refinement_suggestions", []),
+        }
+
+    def _evaluate_theme_full(
+        self,
+        theme: Dict[str, Any],
+        all_themes: List[Dict[str, Any]],
+        original_codes: List[Dict[str, Any]],
+        stage: Optional[str] = None,
+    ) -> EvaluationResult:
+        """
+        Legacy single-call evaluation; also the fallback path when the
+        decision provider fails with a recoverable error.
 
         Args:
             theme: Theme dictionary to evaluate
@@ -156,7 +391,7 @@ class EvaluationAgent:
 """
 
         if self.before_model_call:
-            self.before_model_call(f"评估主题 · {theme['name']}")
+            self.before_model_call(stage or f"评估主题 · {theme['name']}")
         response = self.client.chat.completions.create(
             model=self.model,
             messages=[
@@ -210,6 +445,8 @@ class EvaluationAgent:
             OverallEvaluation object
         """
         print("\nEvaluating themes...")
+        if not themes:
+            raise ValueError("没有可评估的主题；请检查主题生成结果。")
 
         def evaluate_indexed(item):
             idx, theme = item
@@ -284,6 +521,10 @@ class EvaluationAgent:
             if issues:
                 feedback += f"常见问题：{'、'.join(issues)}。"
 
+        flagged = [e for e in evaluations if getattr(e, "flagged_for_review", False)]
+        if flagged:
+            feedback += f"有 {len(flagged)} 个主题存在低置信度评分，建议人工复核。"
+
         return feedback
 
     def run(
@@ -309,7 +550,12 @@ class EvaluationAgent:
             "theme_evaluations": [e.model_dump() for e in overall_eval.theme_evaluations],
             "average_score": overall_eval.average_score,
             "is_acceptable": overall_eval.is_acceptable,
-            "global_feedback": overall_eval.global_feedback
+            "global_feedback": overall_eval.global_feedback,
+            "decision_provider": self.decision_provider.name if self.decision_provider else None,
+            "confidence_threshold": self.confidence_threshold,
+            "flagged_themes": [
+                e.theme_name for e in overall_eval.theme_evaluations if e.flagged_for_review
+            ],
         }
 
         # Save evaluation results if path provided

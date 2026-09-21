@@ -112,10 +112,45 @@ waits for all evaluations. Pausing blocks requests that have not started yet;
 requests already sent to the provider may finish first. The selected limit is
 recorded as `configuration.max_workers` in the final JSON result.
 
+### Decision model integration (System One / Jev)
+
+Theme evaluation uses a hybrid two-stage flow. A decision provider first
+answers typed questions for each theme (four 1–5 criterion scores plus a
+yes/no refinement decision), each with a confidence value. Themes that pass
+every criterion with confident decisions skip the expensive feedback call;
+themes with any score below 4, a refinement decision, or a confidence below
+the threshold get a second call that writes feedback text and refinement
+suggestions. Decisions with low confidence are marked `建议人工复核` in the
+results.
+
+Two decision providers are available:
+
+- **跟随主模型 (default)**: the selected analysis model answers the typed
+  questions in JSON mode. Confidence values are self-reported by the model —
+  a weak signal kept for the audit trail, not a calibrated probability.
+- **Jev（实验性）**: the TypeSafe Jev System One decision API
+  ([docs](https://docs.typesafe.ai/api)) returns probability-based scores and
+  confidence in a single request per theme. Set `JEV_API_KEY` (and optionally
+  `JEV_BASE_URL`, `JEV_MODEL`) before selecting this mode; the sidebar's
+  **测试 API 连接** can verify the decision endpoint separately.
+
+The sidebar's **决策模式** selects the provider. The confidence threshold
+lives under **高级设置** (default 0.7). Saved results record the provider and
+threshold under `configuration.decision_provider` /
+`configuration.confidence_threshold`, and each theme evaluation carries
+`score_confidences`, `raw_scores`, `flagged_for_review`, and
+`feedback_source` (`llm`, `placeholder`, or `fallback`) under
+`final_evaluation.theme_evaluations` and, when stage files are enabled, in
+`02_evaluation_iter*.json`. If a decision request fails with a recoverable
+error, the theme falls back to the legacy single-call evaluation and the
+result is marked `fallback`. Jev configuration errors (for example an
+invalid key) stop the run instead of being silently ignored.
+
 ## Key Features
 
 - Multi-agent LLM architecture with coordinated Generation, Evaluation, and Refinement agents.
 - Human-in-the-loop design with clinician-defined goals, evaluation criteria, and final approval.
+- Decision-model integration: theme scores carry per-criterion confidence; low-confidence themes are flagged for human review.
 - Quantitative evaluation using Jaccard similarity, hit rate, and embedding-based cosine similarity.
 - End-to-end thematic analysis completed in under ten minutes, reducing manual workload by more than 99%.
 
