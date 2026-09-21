@@ -381,7 +381,48 @@ def main() -> None:
 
         api_key = api_key_input.strip() or saved_api_key or os.getenv(env_name, "").strip()
         endpoint = base_url.strip() if base_url is not None else None
-        decision_mode = st.session_state.get("decision_mode", "跟随主模型")
+
+        st.subheader("决策设置")
+        decision_mode = st.selectbox(
+            "决策模式", ["跟随主模型", JEV_DECISION_MODE], key="decision_mode",
+            disabled=running,
+            help="跟随主模型：主模型以 JSON 模式给出评分与置信度；Jev：使用 TypeSafe Jev 决策接口。",
+        )
+        jev_api_key = ""
+        if decision_mode == JEV_DECISION_MODE:
+            saved_jev_api_key = load_saved_api_key("Jev")
+            jev_api_key_input = st.text_input(
+                "Jev API Key", type="password", key="api_key_Jev", disabled=running,
+            )
+            if saved_jev_api_key:
+                st.caption("已保存 Jev API Key；输入框留空时自动使用。")
+            else:
+                st.caption("留空时读取本机环境变量 JEV_API_KEY。")
+            st.button(
+                "保存 Jev Key", key="save_jev_api_key", on_click=save_api_key,
+                args=("Jev",), disabled=running, use_container_width=True,
+            )
+            st.button(
+                "删除已保存 Jev Key", key="delete_saved_jev_api_key",
+                on_click=delete_saved_api_key, args=("Jev",),
+                disabled=running or not saved_jev_api_key, use_container_width=True,
+            )
+            jev_notice = st.session_state.pop("api_key_notice_Jev", None)
+            if jev_notice:
+                kind, message = jev_notice
+                if kind == "success":
+                    st.success(message)
+                elif kind == "warning":
+                    st.warning(message)
+                else:
+                    st.error(message)
+            jev_api_key = (
+                jev_api_key_input.strip()
+                or saved_jev_api_key
+                or os.getenv("JEV_API_KEY", "").strip()
+            )
+            st.caption("可选环境变量：JEV_BASE_URL、JEV_MODEL。")
+
         st.caption("测试会发送一次简短模型请求，可能产生少量费用。")
         if st.button("测试 API 连接", key="test_api_connection", disabled=running):
             if not api_key:
@@ -390,8 +431,8 @@ def main() -> None:
                 st.error("请填写模型名称。")
             elif base_url is not None and not endpoint:
                 st.error("请填写接口地址。")
-            elif decision_mode == JEV_DECISION_MODE and not os.getenv("JEV_API_KEY", "").strip():
-                st.error("决策模式为 Jev 时，请先设置 JEV_API_KEY 环境变量。")
+            elif decision_mode == JEV_DECISION_MODE and not jev_api_key:
+                st.error("决策模式为 Jev 时，请填写 Jev API Key，或设置 JEV_API_KEY 环境变量。")
             else:
                 try:
                     with st.spinner("正在测试模型接口……"):
@@ -399,7 +440,7 @@ def main() -> None:
                     if decision_mode == JEV_DECISION_MODE:
                         with st.spinner("正在测试决策接口……"):
                             check_jev_connection(
-                                os.getenv("JEV_API_KEY", "").strip(),
+                                jev_api_key,
                                 os.getenv("JEV_BASE_URL"),
                             )
                 except APIStatusError as exc:
@@ -412,13 +453,6 @@ def main() -> None:
 
         st.divider()
         st.header("运行设置")
-        decision_mode = st.selectbox(
-            "决策模式", ["跟随主模型", JEV_DECISION_MODE], key="decision_mode",
-            disabled=running,
-            help="跟随主模型：主模型以 JSON 模式给出评分与置信度；Jev：使用 TypeSafe Jev 决策接口（需设置 JEV_API_KEY）。",
-        )
-        if decision_mode == JEV_DECISION_MODE:
-            st.caption("使用 Jev 需设置环境变量 JEV_API_KEY；可选 JEV_BASE_URL、JEV_MODEL。")
         chunk_size = st.number_input(
             "初始切块大小（字词/块）", min_value=100, max_value=10000,
             value=4000, step=100, key="chunk_size", disabled=running,
@@ -479,13 +513,13 @@ def main() -> None:
                 st.error("请填写模型名称。")
             elif base_url is not None and not endpoint:
                 st.error("请填写接口地址。")
-            elif decision_mode == JEV_DECISION_MODE and not os.getenv("JEV_API_KEY", "").strip():
-                st.error("决策模式为 Jev 时，请先设置 JEV_API_KEY 环境变量。")
+            elif decision_mode == JEV_DECISION_MODE and not jev_api_key:
+                st.error("决策模式为 Jev 时，请填写 Jev API Key，或设置 JEV_API_KEY 环境变量。")
             else:
                 decision_provider = None
                 if decision_mode == JEV_DECISION_MODE:
                     decision_provider = JevDecisionClient(
-                        api_key=os.getenv("JEV_API_KEY", "").strip(),
+                        api_key=jev_api_key,
                         base_url=os.getenv("JEV_BASE_URL") or None,
                         model=os.getenv("JEV_MODEL") or None,
                     )

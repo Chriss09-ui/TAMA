@@ -429,7 +429,7 @@ class StreamlitAppTests(unittest.TestCase):
         self.assertIn("错误位置：", captions)
         self.assertNotIn("secret-api-key", captions)
 
-    def test_jev_mode_without_env_key_blocks_analysis(self):
+    def test_jev_mode_without_key_blocks_analysis(self):
         with patch.dict(os.environ, {}, clear=True), patch("tama.TAMAFramework") as framework:
             app = AppTest.from_file(str(APP_PATH)).run()
             app.selectbox(key="decision_mode").set_value("Jev（实验性）").run()
@@ -438,7 +438,7 @@ class StreamlitAppTests(unittest.TestCase):
             app.button(key="run_analysis").click().run()
 
         self.assertFalse(app.exception)
-        self.assertIn("JEV_API_KEY", app.error[0].value)
+        self.assertIn("Jev API Key", app.error[0].value)
         framework.assert_not_called()
 
     def test_jev_mode_builds_jev_decision_client(self):
@@ -447,12 +447,13 @@ class StreamlitAppTests(unittest.TestCase):
             "metadata": {"final_average_score": 4.0},
             "refinement_iterations": 1, "final_themes": [],
         }
-        with patch.dict(os.environ, {"JEV_API_KEY": "jev-test"}, clear=True), \
+        with patch.dict(os.environ, {}, clear=True), \
                 patch("tama.TAMAFramework") as framework, \
                 patch("decisions.jev_client.JevDecisionClient") as jev_client_cls:
             framework.return_value.run_analysis.return_value = result
             app = AppTest.from_file(str(APP_PATH)).run()
             app.selectbox(key="decision_mode").set_value("Jev（实验性）").run()
+            app.text_input(key="api_key_Jev").set_value("jev-test").run()
             app.text_area(key="transcript_text").set_value("测试访谈").run()
             app.text_input(key="api_key_DeepSeek").set_value("test-key").run()
             app.button(key="run_analysis").click().run()
@@ -471,7 +472,7 @@ class StreamlitAppTests(unittest.TestCase):
         )
 
     def test_jev_connection_test_sends_noul_request(self):
-        with patch.dict(os.environ, {"JEV_API_KEY": "jev-test"}, clear=True), \
+        with patch.dict(os.environ, {}, clear=True), \
                 patch("openai.OpenAI") as main_client, \
                 patch("decisions.jev_client.JevDecisionClient") as jev_client_cls:
             main_client.return_value.chat.completions.create.return_value.choices = [object()]
@@ -480,6 +481,7 @@ class StreamlitAppTests(unittest.TestCase):
             }
             app = AppTest.from_file(str(APP_PATH)).run()
             app.selectbox(key="decision_mode").set_value("Jev（实验性）").run()
+            app.text_input(key="api_key_Jev").set_value("jev-test").run()
             app.text_input(key="api_key_DeepSeek").set_value("test-key").run()
             app.button(key="test_api_connection").click().run()
 

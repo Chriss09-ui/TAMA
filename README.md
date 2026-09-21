@@ -130,9 +130,11 @@ Two decision providers are available:
   a weak signal kept for the audit trail, not a calibrated probability.
 - **Jev（实验性）**: the TypeSafe Jev System One decision API
   ([docs](https://docs.typesafe.ai/api)) returns probability-based scores and
-  confidence in a single request per theme. Set `JEV_API_KEY` (and optionally
-  `JEV_BASE_URL`, `JEV_MODEL`) before selecting this mode; the sidebar's
-  **测试 API 连接** can verify the decision endpoint separately.
+  confidence in a single request per theme. Select this mode and enter the
+  Jev API key in the sidebar; it can be stored in the system credential vault.
+  `JEV_API_KEY` remains available as a fallback, with optional `JEV_BASE_URL`
+  and `JEV_MODEL`. The sidebar's **测试 API 连接** verifies the decision
+  endpoint separately.
 
 The sidebar's **决策模式** selects the provider. The confidence threshold
 lives under **高级设置** (default 0.7). Saved results record the provider and
