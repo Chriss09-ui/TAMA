@@ -140,7 +140,8 @@ The sidebar's **决策模式** selects the provider. The confidence threshold
 lives under **高级设置** (default 0.7). Saved results record the provider and
 threshold under `configuration.decision_provider` /
 `configuration.confidence_threshold`, and each theme evaluation carries
-`score_confidences`, `raw_scores`, `flagged_for_review`, and
+`score_confidences`, zero-based `raw_scores`, one-based probability-weighted
+`weighted_scores`, `flagged_for_review`, and
 `feedback_source` (`llm`, `placeholder`, or `fallback`) under
 `final_evaluation.theme_evaluations` and, when stage files are enabled, in
 `02_evaluation_iter*.json`. If a decision request fails with a recoverable

@@ -42,6 +42,7 @@ class EvaluationResult(BaseModel):
     score_confidences: Optional[Dict[str, float]] = None
     needs_refinement_confidence: Optional[float] = None
     raw_scores: Optional[Dict[str, float]] = None
+    weighted_scores: Optional[Dict[str, float]] = None
     flagged_for_review: bool = False
     feedback_source: str = "llm"  # "llm" | "placeholder" | "fallback"
 
@@ -171,7 +172,14 @@ class EvaluationAgent:
             ),
             "needs_refinement": DecisionQuestion(
                 key="needs_refinement", kind="noul",
-                instructions="综合四项标准判断：该主题是否需要修订？",
+                instructions=(
+                    "判断该主题是否需要修订。请独立检查四项标准："
+                    f"覆盖度——{self.criteria.coverage}；"
+                    f"概念清晰度——{self.criteria.actionability}；"
+                    f"区分度——{self.criteria.distinctiveness}；"
+                    f"相关性——{self.criteria.relevance}。"
+                    "任一重要标准未达到良好水平时回答‘是’。"
+                ),
             ),
         }
 
@@ -193,13 +201,17 @@ class EvaluationAgent:
         score_keys = ("coverage", "actionability", "distinctiveness", "relevance")
         scores = {}
         raw_scores = {}
+        weighted_scores = {}
         confidences = {}
         for key in score_keys:
             raw = answers[key].score if answers[key].score is not None else 0.0
+            bounded_raw = min(float(len(scale) - 1), max(0.0, raw))
             # Answers carry a zero-based weighted level index; convert half-up
-            # to the 1-5 rating used across the framework.
-            scores[key] = min(5, max(1, math.floor(raw + 0.5) + 1))
+            # for legacy integer fields, while keeping the continuous 1-5
+            # value for branching and aggregate evaluation.
+            scores[key] = min(5, max(1, math.floor(bounded_raw + 0.5) + 1))
             raw_scores[key] = raw
+            weighted_scores[key] = bounded_raw + 1.0
             confidences[key] = answers[key].confidence
         needs_refinement = (answers["needs_refinement"].probability or 0.0) >= 0.5
         needs_refinement_confidence = answers["needs_refinement"].confidence
@@ -207,22 +219,24 @@ class EvaluationAgent:
         flagged_for_review = any(
             value < self.confidence_threshold for value in confidences.values()
         )
-        overall_score = sum(scores.values()) / 4.0
+        overall_score = sum(weighted_scores.values()) / 4.0
 
         needs_detail = (
             needs_refinement
-            or any(scores[key] < 4 for key in score_keys)
+            or any(weighted_scores[key] < 4.0 for key in score_keys)
             or flagged_for_review
         )
         if needs_detail:
             if self.before_model_call:
                 self.before_model_call(f"生成评估反馈 · {theme['name']}")
-            feedback = self._generate_detailed_feedback(theme, other_themes, original_codes, scores)
+            feedback = self._generate_detailed_feedback(
+                theme, other_themes, original_codes, weighted_scores,
+            )
             needs_refinement = feedback["needs_refinement"]
             feedback_source = "llm"
         else:
             feedback = {
-                key: f"该项评分 {scores[key]}/5，达到标准；快速评估未生成详细反馈。"
+                key: f"该项概率加权评分 {weighted_scores[key]:.2f}/5，达到标准；快速评估未生成详细反馈。"
                 for key in score_keys
             }
             feedback["refinement_suggestions"] = []
@@ -245,6 +259,7 @@ class EvaluationAgent:
             score_confidences=confidences,
             needs_refinement_confidence=needs_refinement_confidence,
             raw_scores=raw_scores,
+            weighted_scores=weighted_scores,
             flagged_for_review=flagged_for_review,
             feedback_source=feedback_source,
         )
@@ -254,7 +269,7 @@ class EvaluationAgent:
         theme: Dict[str, Any],
         other_themes: List[Dict[str, Any]],
         original_codes: List[Dict[str, Any]],
-        scores: Dict[str, int],
+        scores: Dict[str, float],
     ) -> Dict[str, Any]:
         """Ask the main model for feedback text on already-scored criteria."""
         other_themes_text = "\n".join([f"- {t['name']}: {t['description']}" for t in other_themes])
@@ -265,10 +280,10 @@ class EvaluationAgent:
 评分已由评估流程给出，直接采用，不重新评分。
 
 主题「{theme['name']}」的评分结果：
-- 覆盖度：{scores['coverage']}/5
-- 概念清晰度：{scores['actionability']}/5
-- 区分度：{scores['distinctiveness']}/5
-- 相关性：{scores['relevance']}/5
+- 覆盖度：{scores['coverage']:.2f}/5
+- 概念清晰度：{scores['actionability']:.2f}/5
+- 区分度：{scores['distinctiveness']:.2f}/5
+- 相关性：{scores['relevance']:.2f}/5
 
 待评估主题：
 名称：{theme['name']}

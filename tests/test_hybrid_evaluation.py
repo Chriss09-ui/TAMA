@@ -101,6 +101,8 @@ class HybridEvaluationTests(unittest.TestCase):
         })
         self.assertEqual(questions["coverage"].scale, SCALE)
         self.assertEqual(questions["needs_refinement"].kind, "noul")
+        self.assertIn("覆盖度", questions["needs_refinement"].instructions)
+        self.assertIn("区分度", questions["needs_refinement"].instructions)
 
     def test_low_score_theme_triggers_feedback_call(self):
         provider = StubDecisionProvider(decision_answers(coverage=2.0))
@@ -160,6 +162,29 @@ class HybridEvaluationTests(unittest.TestCase):
             result.raw_scores,
             {"coverage": 3.5, "actionability": 2.5, "distinctiveness": 0.2, "relevance": 4.4},
         )
+        self.assertEqual(
+            result.weighted_scores,
+            {"coverage": 4.5, "actionability": 3.5, "distinctiveness": 1.2, "relevance": 5.0},
+        )
+
+    def test_continuous_score_below_threshold_triggers_feedback(self):
+        provider = StubDecisionProvider(decision_answers(coverage=2.6))
+        agent, stages = self.make_agent(provider)
+        agent.client.chat.completions.create.return_value = fake_response({
+            "coverage_feedback": "覆盖度尚未达到四分",
+            "actionability_feedback": "反馈",
+            "distinctiveness_feedback": "反馈",
+            "relevance_feedback": "反馈",
+            "needs_refinement": True,
+            "refinement_suggestions": ["补充覆盖"],
+        })
+
+        result = agent.evaluate_theme(THEME, [THEME], CODES)
+
+        self.assertEqual(result.coverage_score, 4)
+        self.assertAlmostEqual(result.weighted_scores["coverage"], 3.6)
+        self.assertAlmostEqual(result.overall_score, 3.9)
+        self.assertEqual(stages[-1], "生成评估反馈 · 日常安排")
 
     def test_needs_refinement_probability_gates_detail_call(self):
         # 0.6 -> needs refinement -> detail call runs and its verdict wins.
@@ -317,6 +342,7 @@ class HybridEvaluationTests(unittest.TestCase):
         self.assertIsNone(result.score_confidences)
         self.assertIsNone(result.needs_refinement_confidence)
         self.assertIsNone(result.raw_scores)
+        self.assertIsNone(result.weighted_scores)
         self.assertFalse(result.flagged_for_review)
         self.assertEqual(result.feedback_source, "llm")
 
