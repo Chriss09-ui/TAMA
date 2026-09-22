@@ -3,7 +3,8 @@
   "max_iterations": 5,
   "acceptance_threshold": 4.0,
   "output_dir": "outputs",
-  "chunk_size_words": 4000,
+  "chunk_strategy": "balanced",
+  "manual_chunk_size": null,
   "evaluation_criteria": {
     "coverage": "should comprehensively capture all important patterns and concepts from the data",
     "actionability": "should encapsulate a single concept that is clear and actionable",
@@ -14,6 +15,6 @@
     "model_options": ["gpt-4o", "gpt-4o-mini", "gpt-4-turbo"],
     "acceptance_threshold_info": "Score out of 5.0 - themes must average this score to be accepted",
     "max_iterations_info": "Maximum number of refinement cycles before stopping",
-    "chunk_size_info": "Number of words per chunk (3000-5000 recommended)"
+    "chunk_strategy_info": "fine, balanced, economy, or manual; manual requires manual_chunk_size"
   }
 }

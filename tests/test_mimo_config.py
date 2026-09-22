@@ -54,6 +54,7 @@ class MiMoConfigTests(unittest.TestCase):
         generation.assert_called_once_with(
             api_key="mimo-test", model="mimo-v2.5-pro",
             base_url="https://api.xiaomimimo.com/v1", chunk_size=600,
+            chunk_strategy="manual",
             max_workers=2,
         )
         evaluation.assert_called_once_with(

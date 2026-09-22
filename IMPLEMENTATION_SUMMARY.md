@@ -74,7 +74,7 @@ This document provides a technical summary of the TAMA (Thematic Analysis using 
 **Purpose**: Transform raw transcripts into initial themes
 
 **Key Classes**:
-- `Chunk`: Represents transcript segments (3-5k words)
+- `Chunk`: Represents dynamically sized transcript windows with source offsets
 - `Code`: Extracted patterns (<25 words)
 - `Theme`: Synthesized themes (~25 words)
 - `GenerationAgent`: Main agent class
@@ -212,7 +212,7 @@ Input Transcript (text)
         │
         ▼
 ┌──────────────────┐
-│ Chunking         │  → Chunks (3-5k words each)
+│ Chunking         │  → Dynamic chunks at natural transcript boundaries
 └──────────────────┘
         │
         ▼
@@ -269,7 +269,7 @@ Input Transcript (text)
 
 **Estimated API Costs** (per analysis):
 - Typical interview: 5,000-20,000 words
-- Chunks: 2-5 chunks
+- Chunks: determined from transcript length and the selected strategy
 - LLM calls: ~10-20 total
 - Cost with GPT-4o: $0.10-0.50
 - Cost with GPT-4o-mini: $0.01-0.05
@@ -391,7 +391,7 @@ def test_chunking():
     transcript = "..." * 5000
     chunks = agent.chunk_transcript(transcript)
     assert len(chunks) > 0
-    assert all(len(c.text.split()) <= 4000 for c in chunks)
+    assert all(c.measured_size <= agent.last_chunk_plan.hard_limit for c in chunks)
 ```
 
 ### Integration Tests

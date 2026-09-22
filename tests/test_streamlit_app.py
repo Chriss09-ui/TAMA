@@ -176,6 +176,8 @@ class StreamlitAppTests(unittest.TestCase):
             app.selectbox(key="provider").set_value("MiMo").run()
             app.text_area(key="transcript_text").set_value("一段测试访谈文本").run()
             app.text_input(key="api_key_MiMo").set_value("test-key").run()
+            self.assertEqual(app.selectbox(key="chunk_strategy").value, "自动 · 均衡")
+            app.selectbox(key="chunk_strategy").set_value("手动设置").run()
             self.assertEqual(app.number_input(key="chunk_size").value, 4000)
             app.number_input(key="chunk_size").set_value(600).run()
             self.assertEqual(app.number_input(key="max_workers").value, 4)
@@ -191,6 +193,7 @@ class StreamlitAppTests(unittest.TestCase):
             model="mimo-v2.5-pro",
             base_url="https://api.xiaomimimo.com/v1",
             chunk_size=600,
+            chunk_strategy="manual",
             max_workers=2,
             max_iterations=5,
             decision_provider=None,
@@ -227,7 +230,8 @@ class StreamlitAppTests(unittest.TestCase):
             api_key="test-key",
             model="deepseek-flash",
             base_url="https://api.deepseek.com",
-            chunk_size=4000,
+            chunk_size=None,
+            chunk_strategy="balanced",
             max_workers=4,
             max_iterations=5,
             decision_provider=None,
@@ -365,7 +369,8 @@ class StreamlitAppTests(unittest.TestCase):
         self.assertFalse(new_session.exception)
         framework.assert_called_once_with(
             api_key="saved-test-key", model="deepseek-flash",
-            base_url="https://api.deepseek.com", chunk_size=4000,
+            base_url="https://api.deepseek.com", chunk_size=None,
+            chunk_strategy="balanced",
             max_workers=4, max_iterations=5,
             decision_provider=None, confidence_threshold=0.7,
             output_dir=str(ROOT / "outputs"),
@@ -464,7 +469,8 @@ class StreamlitAppTests(unittest.TestCase):
         jev_client_cls.assert_called_once_with(api_key="jev-test", base_url=None, model=None)
         framework.assert_called_once_with(
             api_key="test-key", model="deepseek-flash",
-            base_url="https://api.deepseek.com", chunk_size=4000,
+            base_url="https://api.deepseek.com", chunk_size=None,
+            chunk_strategy="balanced",
             max_workers=4, max_iterations=5,
             decision_provider=jev_client_cls.return_value,
             confidence_threshold=0.7,

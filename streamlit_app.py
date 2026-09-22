@@ -21,6 +21,7 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from tama import TAMAFramework
 from analysis_job import AnalysisJob
+from chunking import ChunkStrategy, plan_chunks
 from decisions import DecisionQuestion
 from decisions.jev_client import JevDecisionClient
 from prompts import (
@@ -30,6 +31,13 @@ from prompts import (
 )
 
 JEV_DECISION_MODE = "Jev（实验性）"
+
+CHUNK_STRATEGIES: dict[str, ChunkStrategy] = {
+    "自动 · 精细": "fine",
+    "自动 · 均衡": "balanced",
+    "自动 · 少调用": "economy",
+    "手动设置": "manual",
+}
 
 KEYRING_SERVICE = "TAMA Qualitative Analysis"
 
@@ -458,11 +466,29 @@ def main() -> None:
 
         st.divider()
         st.header("运行设置")
-        chunk_size = st.number_input(
-            "初始切块大小（字词/块）", min_value=100, max_value=10000,
-            value=4000, step=100, key="chunk_size", disabled=running,
-            help="由 Generation Agent 切分访谈；中文按字，英文等文本按空格分词。数值越小，片段和模型请求通常越多。",
+        chunk_strategy_label = st.selectbox(
+            "切块策略",
+            list(CHUNK_STRATEGIES),
+            index=1,
+            key="chunk_strategy",
+            disabled=running,
+            help="自动模式会按全文长度计算片段数量，并优先在完整问答、段落、说话人轮次或句末切分。",
         )
+        chunk_strategy = CHUNK_STRATEGIES[chunk_strategy_label]
+        chunk_size = None
+        if chunk_strategy == "manual":
+            chunk_size = st.number_input(
+                "初始切块上限（字词/块）", min_value=100, max_value=10000,
+                value=4000, step=100, key="chunk_size", disabled=running,
+                help="中文按字，英文等文本按空格分词；系统仍会优先在自然边界处切分。",
+            )
+        else:
+            strategy_help = {
+                "fine": "片段更小，局部编码更细，请求通常更多。",
+                "balanced": "在编码细度和 API 请求数量之间保持平衡。",
+                "economy": "片段更大，减少 API 请求，适合较长材料。",
+            }
+            st.caption(strategy_help[chunk_strategy])
         max_workers = st.number_input(
             "并发请求数", min_value=1, max_value=8, value=4, step=1,
             key="max_workers", disabled=running,
@@ -489,6 +515,8 @@ def main() -> None:
     source = st.radio("输入方式", ["粘贴文本", "上传文件"], horizontal=True)
     pasted_text = ""
     uploaded_file = None
+    transcript = ""
+    input_error = None
     if source == "粘贴文本":
         pasted_text = st.text_area(
             "逐字稿内容",
@@ -496,19 +524,35 @@ def main() -> None:
             placeholder="在这里粘贴访谈逐字稿……",
             key="transcript_text",
         )
-        if pasted_text.strip():
-            st.caption(f"已输入 {len(pasted_text.strip())} 个字符")
     else:
         uploaded_file = st.file_uploader("选择 UTF-8 TXT 或 Word DOCX 文件", type=["txt", "docx"])
 
+    try:
+        transcript = read_transcript(source, pasted_text, uploaded_file)
+    except UnicodeDecodeError:
+        input_error = "文件无法按 UTF-8 读取，请将逐字稿另存为 UTF-8 文本后重试。"
+    except ValueError as exc:
+        input_error = str(exc)
+
+    if input_error:
+        st.error(input_error)
+    elif transcript:
+        preview, _ = plan_chunks(
+            transcript,
+            strategy=chunk_strategy,
+            manual_chunk_size=int(chunk_size) if chunk_size is not None else None,
+        )
+        size_unit = "字词" if preview.measurement_unit == "text_units" else "估算模型文本单位"
+        st.caption(
+            f"已读取 {preview.total_characters} 个字符 · 预计 {preview.num_chunks} 个片段 · "
+            f"每片目标约 {preview.target_size} {size_unit} · 上限 {preview.hard_limit}"
+        )
+        st.caption("实际切点会优先保留完整问答、段落、说话人轮次和句子。")
+
     st.caption("开始后，访谈文本会发送到所选模型服务进行分析。")
     if st.button("开始分析", type="primary", use_container_width=True, key="run_analysis", disabled=running):
-        try:
-            transcript = read_transcript(source, pasted_text, uploaded_file)
-        except UnicodeDecodeError:
-            st.error("文件无法按 UTF-8 读取，请将逐字稿另存为 UTF-8 文本后重试。")
-        except ValueError as exc:
-            st.error(str(exc))
+        if input_error:
+            pass
         else:
             if not transcript:
                 st.error("请先粘贴访谈文本或上传 TXT/DOCX 文件。")
@@ -534,7 +578,8 @@ def main() -> None:
                         api_key=api_key,
                         model=api_model_name(provider, model),
                         base_url=endpoint,
-                        chunk_size=int(chunk_size),
+                        chunk_size=int(chunk_size) if chunk_size is not None else None,
+                        chunk_strategy=chunk_strategy,
                         max_workers=int(max_workers),
                         max_iterations=int(max_iterations),
                         decision_provider=decision_provider,

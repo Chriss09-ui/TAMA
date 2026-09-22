@@ -26,6 +26,7 @@ TAMA/
 ├── src/                             # Source code
 │   ├── __init__.py                 # Package initialization
 │   ├── tama.py                     # Main TAMA orchestrator
+│   ├── chunking.py                 # Dynamic sizing and natural-boundary splitting
 │   │
 │   ├── agents/                     # Multi-agent components
 │   │   ├── __init__.py
@@ -73,6 +74,7 @@ TAMA/
 | File | Description |
 |------|-------------|
 | `src/tama.py` | Main orchestrator coordinating all agents |
+| `src/chunking.py` | Shared automatic/manual chunk planner used by the UI and Generation Agent |
 | `src/agents/generation_agent.py` | Chunks transcripts, extracts codes, generates themes |
 | `src/agents/evaluation_agent.py` | Evaluates themes on 4 criteria, provides feedback |
 | `src/agents/refinement_agent.py` | Refines themes using Add/Split/Combine/Delete |
@@ -99,6 +101,7 @@ TAMA/
 1. **User starts**: Runs `example_usage.py` or custom script
 2. **Initialization**: `src/tama.py` creates TAMAFramework instance
 3. **Generation**: `generation_agent.py` processes transcript
+   - `chunking.py` resolves the selected strategy and preserves natural boundaries
    - Output: `outputs/[session]/01_generation.json`
 4. **Iteration Loop**:
    - **Evaluation**: `evaluation_agent.py` assesses themes

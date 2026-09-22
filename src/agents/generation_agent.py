@@ -3,13 +3,19 @@ Generation Agent for TAMA Framework
 Handles chunking, coding, and initial theme generation from interview transcripts.
 """
 
+from bisect import bisect_right
 from typing import List, Dict, Any, Optional
 from openai import OpenAI
 from pydantic import BaseModel
 import json
-import re
 from concurrent.futures import ThreadPoolExecutor
 
+from chunking import (
+    ANALYSIS_UNIT_PATTERN,
+    ChunkStrategy,
+    plan_chunks,
+    resolve_chunk_strategy,
+)
 from prompts import (
     CODE_EXTRACTION_SYSTEM_PROMPT,
     THEME_GENERATION_SYSTEM_PROMPT,
@@ -24,6 +30,9 @@ class Chunk(BaseModel):
     text: str
     start_word: int
     end_word: int
+    start_char: int = 0
+    end_char: int = 0
+    measured_size: int = 0
 
 
 class Code(BaseModel):
@@ -43,14 +52,15 @@ class Theme(BaseModel):
 class GenerationAgent:
     """
     Generation Agent that processes interview transcripts through:
-    1. Chunking: Split transcripts into manageable segments by Chinese characters and other words
+    1. Chunking: Build dynamically sized windows at natural transcript boundaries
     2. Coding: Extract concise codes from each chunk
     3. Theme Generation: Synthesize codes into concise themes
     """
 
     def __init__(
         self, api_key: str, model: str = "gpt-4o", base_url: Optional[str] = None,
-        chunk_size: int = 4000, max_workers: int = 4,
+        chunk_size: Optional[int] = None, max_workers: int = 4,
+        chunk_strategy: Optional[ChunkStrategy] = None,
     ):
         """
         Initialize the Generation Agent.
@@ -59,22 +69,27 @@ class GenerationAgent:
             api_key: API key for the selected model provider
             model: Model to use (default: gpt-4o)
             base_url: Optional OpenAI-compatible API endpoint
-            chunk_size: Maximum Chinese characters or whitespace-separated words per chunk
+            chunk_size: Manual maximum Chinese characters or other words per chunk
             max_workers: Maximum concurrent code extraction requests
+            chunk_strategy: fine, balanced, economy, or manual. Omitted values use
+                manual mode when chunk_size is supplied, otherwise balanced mode.
         """
-        if chunk_size < 1:
+        if chunk_size is not None and chunk_size < 1:
             raise ValueError("chunk_size must be positive")
         if max_workers < 1:
             raise ValueError("max_workers must be positive")
+        resolved_strategy = resolve_chunk_strategy(chunk_strategy, chunk_size)
         self.client = OpenAI(api_key=api_key, base_url=base_url)
         self.model = model
         self.chunk_size = chunk_size
+        self.chunk_strategy = resolved_strategy
         self.max_workers = max_workers
         self.before_model_call = None
+        self.last_chunk_plan = None
 
     def chunk_transcript(self, transcript: str) -> List[Chunk]:
         """
-        Split Chinese text by characters and other text by whitespace-separated words.
+        Split a transcript using the selected sizing strategy and natural boundaries.
 
         Args:
             transcript: Full interview transcript text
@@ -82,25 +97,27 @@ class GenerationAgent:
         Returns:
             List of Chunk objects
         """
-        units = list(re.finditer(r"[\u3400-\u9fff]|[^\s\u3400-\u9fff]+", transcript))
-        chunks = []
-        chunk_id = 0
+        normalized = transcript.strip()
+        plan, spans = plan_chunks(
+            normalized,
+            strategy=self.chunk_strategy,
+            manual_chunk_size=self.chunk_size,
+        )
+        self.last_chunk_plan = plan
+        unit_ends = [match.end() for match in ANALYSIS_UNIT_PATTERN.finditer(normalized)]
 
-        for i in range(0, len(units), self.chunk_size):
-            end = min(i + self.chunk_size, len(units))
-            start_offset = units[i].start()
-            end_offset = units[end].start() if end < len(units) else units[-1].end()
-            chunk_text = transcript[start_offset:end_offset].strip()
-
-            chunks.append(Chunk(
+        return [
+            Chunk(
                 chunk_id=chunk_id,
-                text=chunk_text,
-                start_word=i,
-                end_word=end
-            ))
-            chunk_id += 1
-
-        return chunks
+                text=normalized[span.start:span.end].strip(),
+                start_word=bisect_right(unit_ends, span.start),
+                end_word=bisect_right(unit_ends, span.end),
+                start_char=span.start,
+                end_char=span.end,
+                measured_size=span.measured_size,
+            )
+            for chunk_id, span in enumerate(spans)
+        ]
 
     def generate_codes_from_chunk(self, chunk: Chunk) -> List[Code]:
         """
@@ -230,7 +247,8 @@ class GenerationAgent:
         result = {
             "chunks": [chunk.model_dump() for chunk in chunks],
             "codes": [code.model_dump() for code in codes],
-            "themes": [theme.model_dump() for theme in themes]
+            "themes": [theme.model_dump() for theme in themes],
+            "chunking": self.last_chunk_plan.to_dict() if self.last_chunk_plan else None,
         }
 
         # Save intermediate results if path provided

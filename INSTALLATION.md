@@ -207,14 +207,20 @@ If you encounter OpenAI rate limits, consider:
 
 ## Advanced Usage
 
-### Custom Chunk Size
+### Chunk Strategy
 
 ```python
 from src.agents.generation_agent import GenerationAgent
 
-# Customize chunk size (default: 4000 words)
-generation_agent = GenerationAgent(api_key=api_key, model="gpt-4o")
-generation_agent.chunk_size = 3000  # Smaller chunks for shorter transcripts
+# Automatic balanced mode is the default
+generation_agent = GenerationAgent(
+    api_key=api_key, model="gpt-4o", chunk_strategy="balanced"
+)
+
+# An explicit size keeps the legacy manual counting rule
+manual_agent = GenerationAgent(
+    api_key=api_key, model="gpt-4o", chunk_size=3000
+)
 ```
 
 ### Programmatic Access to Results

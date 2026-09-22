@@ -11,6 +11,7 @@ import json
 from agents.generation_agent import GenerationAgent
 from agents.evaluation_agent import EvaluationAgent
 from agents.refinement_agent import RefinementAgent
+from chunking import ChunkStrategy, resolve_chunk_strategy
 from decisions.base import DecisionProvider
 
 
@@ -32,8 +33,9 @@ class TAMAFramework:
         output_dir: str = "outputs",
         expert_criteria: Optional[Dict[str, str]] = None,
         base_url: Optional[str] = None,
-        chunk_size: int = 4000,
+        chunk_size: Optional[int] = None,
         max_workers: int = 4,
+        chunk_strategy: Optional[ChunkStrategy] = None,
         decision_provider: Optional[DecisionProvider] = None,
         confidence_threshold: float = 0.7,
     ):
@@ -48,8 +50,10 @@ class TAMAFramework:
             output_dir: Directory to save outputs (default: outputs)
             expert_criteria: Optional study-specific evaluation criteria from a researcher
             base_url: Optional OpenAI-compatible API endpoint
-            chunk_size: Maximum Chinese characters or other words per initial chunk
+            chunk_size: Manual maximum Chinese characters or other words per initial chunk
             max_workers: Maximum concurrent code extraction and theme evaluation requests
+            chunk_strategy: fine, balanced, economy, or manual. Omitted values use
+                manual mode when chunk_size is supplied, otherwise balanced mode.
             decision_provider: Optional typed-decision provider; the main model is used when omitted
             confidence_threshold: Decision confidence below this flags a theme for human review
         """
@@ -60,6 +64,7 @@ class TAMAFramework:
         self.output_dir = output_dir
         self.expert_criteria = expert_criteria
         self.chunk_size = chunk_size
+        self.chunk_strategy = resolve_chunk_strategy(chunk_strategy, chunk_size)
         self.max_workers = max_workers
         self.decision_provider = decision_provider
         self.confidence_threshold = confidence_threshold
@@ -67,7 +72,8 @@ class TAMAFramework:
         # Initialize agents
         self.generation_agent = GenerationAgent(
             api_key=api_key, model=model, base_url=base_url,
-            chunk_size=chunk_size, max_workers=max_workers,
+            chunk_size=chunk_size, chunk_strategy=self.chunk_strategy,
+            max_workers=max_workers,
         )
         self.evaluation_agent = EvaluationAgent(
             api_key=api_key,
@@ -213,6 +219,7 @@ class TAMAFramework:
                 "model": self.model,
                 "max_iterations": self.max_iterations,
                 "chunk_size": self.chunk_size,
+                "chunk_strategy": self.chunk_strategy,
                 "max_workers": self.max_workers,
                 "acceptance_threshold": self.acceptance_threshold,
                 "expert_criteria": self.expert_criteria,
@@ -225,7 +232,8 @@ class TAMAFramework:
             "generation": {
                 "num_chunks": len(generation_result["chunks"]),
                 "num_codes": len(codes),
-                "initial_num_themes": len(generation_result["themes"])
+                "initial_num_themes": len(generation_result["themes"]),
+                "chunking": generation_result.get("chunking"),
             },
             "refinement_iterations": iteration,
             "refinement_history": refinement_history,

@@ -18,6 +18,11 @@ class FrameworkResultTests(unittest.TestCase):
             "chunks": ["访谈文本"],
             "codes": [{"description": "编码"}],
             "themes": [{"name": "主题", "description": "描述", "codes": ["编码"]}],
+            "chunking": {
+                "strategy": "balanced", "total_characters": 4,
+                "estimated_tokens": 3, "target_size": 3,
+                "hard_limit": 2400, "planned_chunks": 1, "num_chunks": 1,
+            },
         }
         evaluation_result = {
             "theme_evaluations": [{"theme_name": "主题", "flagged_for_review": True}],
@@ -40,6 +45,8 @@ class FrameworkResultTests(unittest.TestCase):
             )
 
             self.assertEqual(result["final_evaluation"], evaluation_result)
+            self.assertEqual(result["configuration"]["chunk_strategy"], "balanced")
+            self.assertEqual(result["generation"]["chunking"], generation_result["chunking"])
             refinement_cls.return_value.run.assert_not_called()
             saved_path = Path(output_dir) / "audit-test" / "00_final_results.json"
             with saved_path.open(encoding="utf-8") as saved_file:

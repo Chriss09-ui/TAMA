@@ -97,12 +97,15 @@ key, model, and endpoint; the provider may charge for it. During analysis,
 before the next model request. **继续分析** resumes the same run. Keep the
 browser page and local Streamlit service open while the analysis runs.
 
-Set **初始切块大小（字词/块）** in the sidebar before starting analysis. The
-Generation Agent uses it for the first transcript split (default: 4000 units):
-Chinese characters count individually, while other text is counted by
-whitespace-separated words. Punctuation and original spacing remain in each
-chunk. Smaller chunks generally mean more model requests. The selected value
-is recorded as `configuration.chunk_size` in the final JSON result.
+Choose **切块策略** in the sidebar before starting analysis. The default
+**自动 · 均衡** mode calculates a document-specific target from the complete
+transcript length, then places boundaries at complete question-answer groups,
+paragraphs, speaker turns, or sentence endings. **自动 · 精细** uses smaller
+chunks, while **自动 · 少调用** uses larger chunks. **手动设置** preserves the
+previous adjustable limit, counting Chinese characters individually and other
+text by whitespace-separated words. The page previews the expected chunk count
+before analysis. Final JSON records the selected strategy, resolved target,
+hard limit, source length, and actual chunk count.
 
 Independent code extraction requests and theme evaluations run concurrently.
 The sidebar's **并发请求数** defaults to 4 and can be set from 1 to 8; lower it
@@ -249,7 +252,7 @@ Results are saved to `outputs/[session_name]/`:
 ## Framework Components
 
 ### 1. Generation Agent
-- **Chunking**: Splits transcripts into 3-5k word segments
+- **Chunking**: Dynamically sizes model windows and preserves natural transcript boundaries
 - **Coding**: Extracts codes (<25 words) from each chunk
 - **Theme Generation**: Synthesizes codes into themes (~25 words)
 

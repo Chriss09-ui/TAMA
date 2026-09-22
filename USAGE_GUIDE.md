@@ -145,7 +145,7 @@ tama = TAMAFramework(
 **Input**: Raw transcript (any length)
 
 **Steps**:
-1. **Chunking**: Splits transcript into ~4000-word segments
+1. **Chunking**: Selects a dynamic target from total text length and cuts at natural transcript boundaries
 2. **Coding**: Extracts codes (<25 words) from each chunk
 3. **Theme Generation**: Synthesizes codes into themes (~25 words)
 
@@ -404,7 +404,7 @@ with open("outputs/my_analysis/config.json", 'w') as f:
 **Solutions**:
 - Use `gpt-4o-mini` to reduce rate limit pressure
 - Add delays between iterations (modify source code)
-- Reduce chunk size for smaller API calls
+- Select **自动 · 精细** or lower the manual chunk limit for smaller API calls
 - Check OpenAI account tier and limits
 
 ### Issue: Inconsistent Results
