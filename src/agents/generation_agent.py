@@ -10,6 +10,13 @@ import json
 import re
 from concurrent.futures import ThreadPoolExecutor
 
+from prompts import (
+    CODE_EXTRACTION_SYSTEM_PROMPT,
+    THEME_GENERATION_SYSTEM_PROMPT,
+    build_code_extraction_prompt,
+    build_theme_generation_prompt,
+)
+
 
 class Chunk(BaseModel):
     """Represents a chunk of interview transcript."""
@@ -106,35 +113,14 @@ class GenerationAgent:
         Returns:
             List of Code objects
         """
-        prompt = f"""你是一名质性研究者，正在对访谈文本进行归纳式主题分析。
-
-请从以下访谈片段中提取编码。
-
-要求：
-- 识别文本中有意义的经历、行为、观点和规律
-- 每条编码用简短词组或短句表达，并对应一段有意义的信息
-- 不要预设文本未说明的人群、场景或研究主题
-- 编码内容使用与访谈文本相同的语言，不编造文本中没有的信息
-- 返回包含 "codes" 数组的 JSON 对象，每条编码包含 "description" 字段
-
-访谈片段：
-{chunk.text}
-
-只返回符合以下结构的 JSON 对象，不添加解释或 Markdown：
-{{
-  "codes": [
-    {{"description": "第一条编码的简短描述"}},
-    {{"description": "第二条编码的简短描述"}}
-  ]
-}}
-"""
+        prompt = build_code_extraction_prompt(chunk.text)
 
         if self.before_model_call:
             self.before_model_call(f"提取编码 · 片段 {chunk.chunk_id + 1}")
         response = self.client.chat.completions.create(
             model=self.model,
             messages=[
-                {"role": "system", "content": "你是一名质性研究者。所有编码都必须有提供的访谈文本作为依据。"},
+                {"role": "system", "content": CODE_EXTRACTION_SYSTEM_PROMPT},
                 {"role": "user", "content": prompt}
             ],
             temperature=0.3,
@@ -192,41 +178,14 @@ class GenerationAgent:
         Returns:
             List of Theme objects
         """
-        codes_text = "\n".join([f"- {code.description}" for code in codes])
-
-        prompt = f"""你是一名质性研究者，正在进行归纳式主题分析。
-
-请将以下编码归纳为连贯的主题。
-
-要求：
-- 将相关编码归入更宽泛的主题
-- 每个主题有清楚、具体的名称，描述用一句简短的话表达
-- 主题应概括材料中的重要规律，并与其他主题有所区分
-- 每个主题的 "codes" 字段列出其包含的原始编码描述，不改写这些描述
-- 仅依据提供的编码归纳主题，不编造其中未出现的人群、场景或研究主题
-- 主题名称和描述使用与编码相同的语言
-
-编码：
-{codes_text}
-
-只返回符合以下结构的 JSON 对象，不添加解释或 Markdown：
-{{
-  "themes": [
-    {{
-      "name": "主题名称",
-      "description": "用一句简短的话描述主题",
-      "codes": ["属于该主题的原始编码描述"]
-    }}
-  ]
-}}
-"""
+        prompt = build_theme_generation_prompt(code.description for code in codes)
 
         if self.before_model_call:
             self.before_model_call("归纳主题")
         response = self.client.chat.completions.create(
             model=self.model,
             messages=[
-                {"role": "system", "content": "你是一名质性研究者。所有主题都必须有提供的编码作为依据。"},
+                {"role": "system", "content": THEME_GENERATION_SYSTEM_PROMPT},
                 {"role": "user", "content": prompt}
             ],
             temperature=0.3,

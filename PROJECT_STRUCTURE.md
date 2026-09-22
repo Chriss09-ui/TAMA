@@ -40,6 +40,8 @@ TAMA/
 │   │   ├── llm_client.py          # JSON-mode LLM client (default, works with all providers)
 │   │   └── jev_client.py          # TypeSafe Jev System One HTTP client
 │   │
+│   ├── prompts.py                  # All model prompts, rubrics, and connection-test questions
+│   │
 │   └── utils/                      # Utility functions
 │       └── __init__.py
 │

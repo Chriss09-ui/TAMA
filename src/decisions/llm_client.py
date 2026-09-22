@@ -11,6 +11,7 @@ from typing import Any, Dict, Optional
 from openai import OpenAI
 
 from decisions.base import DecisionAnswer, DecisionProvider, DecisionProviderError, DecisionQuestion, State
+from prompts import LLM_DECISION_SYSTEM_PROMPT, build_llm_decision_prompt
 
 
 def _clamp(value: float, low: float, high: float) -> float:
@@ -39,7 +40,7 @@ class LLMDecisionClient(DecisionProvider):
             response = self.client.chat.completions.create(
                 model=self.model,
                 messages=[
-                    {"role": "system", "content": "你是一名质性研究者。仅依据提供的材料回答问题。"},
+                    {"role": "system", "content": LLM_DECISION_SYSTEM_PROMPT},
                     {"role": "user", "content": prompt},
                 ],
                 temperature=self.temperature,
@@ -53,37 +54,7 @@ class LLMDecisionClient(DecisionProvider):
         return self._parse_answers(data, questions)
 
     def _build_prompt(self, state: State, questions: Dict[str, DecisionQuestion]) -> str:
-        lines = [
-            "你是一名质性研究者。仅依据提供的材料回答问题，不引入材料之外的信息，也不编造依据。",
-            "",
-            "材料（JSON）：",
-            json.dumps(state, ensure_ascii=False, indent=2),
-            "",
-            "请依次回答以下问题：",
-        ]
-        for question in questions.values():
-            lines.append(f"- 「{question.key}」（{_kind_label(question)}）：{question.instructions}")
-            if question.kind == "score" and question.scale:
-                levels = "；".join(f"{i}. {level}" for i, level in enumerate(question.scale))
-                lines.append(f"  等级从低到高：{levels}")
-            if question.kind == "choice" and question.options:
-                options = "；".join(f"{name}——{desc}" for name, desc in question.options.items())
-                lines.append(f"  可选答案：{options}")
-        lines.extend([
-            "",
-            "每项判断还需给出 confidence（0 到 1 的小数），表示你对该项判断的把握。",
-            "",
-            "只返回符合以下结构的 JSON 对象，不添加解释或 Markdown；保留英文键名：",
-            "{",
-            '  "answers": {',
-        ])
-        for question in questions.values():
-            lines.append(f'    "{question.key}": {_example_answer(question)},')
-        lines.extend([
-            "  }",
-            "}",
-        ])
-        return "\n".join(lines)
+        return build_llm_decision_prompt(state, questions)
 
     def _parse_answers(self, data: Any, questions: Dict[str, DecisionQuestion]) -> Dict[str, DecisionAnswer]:
         if not isinstance(data, dict) or not isinstance(data.get("answers"), dict):
@@ -118,24 +89,6 @@ class LLMDecisionClient(DecisionProvider):
                     key=key, kind="score", score=score, confidence=confidence,
                 )
         return answers
-
-
-def _kind_label(question: DecisionQuestion) -> str:
-    return {
-        "noul": "是非判断（probability 为 0 到 1 的数，表示答案为「是」的可能性）",
-        "choice": "选择（choice 从可选答案中选出一个）",
-        "score": "评分（score 为等级序号，从 0 开始）",
-    }[question.kind]
-
-
-def _example_answer(question: DecisionQuestion) -> str:
-    if question.kind == "noul":
-        return '{"probability": 0.8, "confidence": 0.7}'
-    if question.kind == "choice":
-        return '{"choice": "选项名称", "confidence": 0.85}'
-    return '{"score": 3, "confidence": 0.9}'
-
-
 def _as_float(value: Any, key: str, default: float) -> float:
     if value is None:
         return default

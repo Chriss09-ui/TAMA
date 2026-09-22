@@ -13,14 +13,26 @@ from concurrent.futures import ThreadPoolExecutor
 
 from decisions.base import DecisionProvider, DecisionQuestion
 from decisions.llm_client import LLMDecisionClient
+from prompts import (
+    DEFAULT_ACTIONABILITY_CRITERION,
+    DEFAULT_COVERAGE_CRITERION,
+    DEFAULT_DISTINCTIVENESS_CRITERION,
+    DEFAULT_RELEVANCE_CRITERION,
+    EVALUATION_FEEDBACK_SYSTEM_PROMPT,
+    EVALUATION_SCALE,
+    FULL_EVALUATION_SYSTEM_PROMPT,
+    build_evaluation_feedback_prompt,
+    build_evaluation_question_instructions,
+    build_full_evaluation_prompt,
+)
 
 
 class EvaluationCriteria(BaseModel):
     """Represents evaluation criteria for themes."""
-    coverage: str = "应覆盖所提供编码中的重要规律"
-    actionability: str = "应表达一个清楚、便于理解的概念"
-    distinctiveness: str = "应与其他主题有明确区分，避免重叠"
-    relevance: str = "应有提供的编码作为依据，并准确反映受访者表达的意思"
+    coverage: str = DEFAULT_COVERAGE_CRITERION
+    actionability: str = DEFAULT_ACTIONABILITY_CRITERION
+    distinctiveness: str = DEFAULT_DISTINCTIVENESS_CRITERION
+    relevance: str = DEFAULT_RELEVANCE_CRITERION
 
 
 class EvaluationResult(BaseModel):
@@ -152,34 +164,28 @@ class EvaluationAgent:
             ],
             "original_codes": [code["description"] for code in original_codes],
         }
-        scale = ["1 分：较差", "2 分：较弱", "3 分：一般", "4 分：良好", "5 分：优秀"]
+        scale = list(EVALUATION_SCALE)
+        instructions = build_evaluation_question_instructions(self.criteria)
         questions = {
             "coverage": DecisionQuestion(
                 key="coverage", kind="score", scale=scale,
-                instructions=f"评估主题的覆盖度：{self.criteria.coverage}。只依据材料评分，不编造依据。",
+                instructions=instructions["coverage"],
             ),
             "actionability": DecisionQuestion(
                 key="actionability", kind="score", scale=scale,
-                instructions=f"评估主题的概念清晰度：{self.criteria.actionability}。",
+                instructions=instructions["actionability"],
             ),
             "distinctiveness": DecisionQuestion(
                 key="distinctiveness", kind="score", scale=scale,
-                instructions=f"评估主题的区分度：{self.criteria.distinctiveness}。结合其他主题判断重叠程度。",
+                instructions=instructions["distinctiveness"],
             ),
             "relevance": DecisionQuestion(
                 key="relevance", kind="score", scale=scale,
-                instructions=f"评估主题的相关性：{self.criteria.relevance}。编码不足以支持判断时给出较低评分，并指出证据缺口。",
+                instructions=instructions["relevance"],
             ),
             "needs_refinement": DecisionQuestion(
                 key="needs_refinement", kind="noul",
-                instructions=(
-                    "判断该主题是否需要修订。请独立检查四项标准："
-                    f"覆盖度——{self.criteria.coverage}；"
-                    f"概念清晰度——{self.criteria.actionability}；"
-                    f"区分度——{self.criteria.distinctiveness}；"
-                    f"相关性——{self.criteria.relevance}。"
-                    "任一重要标准未达到良好水平时回答‘是’。"
-                ),
+                instructions=instructions["needs_refinement"],
             ),
         }
 
@@ -272,52 +278,17 @@ class EvaluationAgent:
         scores: Dict[str, float],
     ) -> Dict[str, Any]:
         """Ask the main model for feedback text on already-scored criteria."""
-        other_themes_text = "\n".join([f"- {t['name']}: {t['description']}" for t in other_themes])
-        codes_text = "\n".join([f"- {code['description']}" for code in original_codes])
-        theme_codes_text = "\n".join([f"- {code}" for code in theme.get("codes", [])])
-
-        prompt = f"""你是一名质性研究者，正在为主题评估撰写具体反馈。
-评分已由评估流程给出，直接采用，不重新评分。
-
-主题「{theme['name']}」的评分结果：
-- 覆盖度：{scores['coverage']:.2f}/5
-- 概念清晰度：{scores['actionability']:.2f}/5
-- 区分度：{scores['distinctiveness']:.2f}/5
-- 相关性：{scores['relevance']:.2f}/5
-
-待评估主题：
-名称：{theme['name']}
-描述：{theme['description']}
-关联编码：
-{theme_codes_text}
-
-其他主题（用于比较区分度）：
-{other_themes_text}
-
-原始编码：
-{codes_text}
-
-要求：
-- 每项标准的反馈需解释评分依据，低于 4 分的标准给出改进建议
-- 如果编码不足以支持某项判断，指出证据缺口，不编造依据
-- 重新判断该主题是否需要修订，并给出具体修订建议列表
-- 反馈使用与主题和编码相同的语言
-
-只返回符合以下结构的 JSON 对象，不添加解释或 Markdown；保留英文键名：
-{{
-  "coverage_feedback": "覆盖度的具体反馈",
-  "actionability_feedback": "概念清晰度的具体反馈",
-  "distinctiveness_feedback": "区分度的具体反馈",
-  "relevance_feedback": "相关性的具体反馈",
-  "needs_refinement": false,
-  "refinement_suggestions": []
-}}
-"""
+        prompt = build_evaluation_feedback_prompt(
+            theme=theme,
+            other_themes=other_themes,
+            original_codes=original_codes,
+            scores=scores,
+        )
 
         response = self.client.chat.completions.create(
             model=self.model,
             messages=[
-                {"role": "system", "content": "你是一名质性研究者。仅依据提供的材料和评分撰写评估反馈。"},
+                {"role": "system", "content": EVALUATION_FEEDBACK_SYSTEM_PROMPT},
                 {"role": "user", "content": prompt}
             ],
             temperature=0.2,
@@ -353,64 +324,19 @@ class EvaluationAgent:
             EvaluationResult object
         """
         other_themes = [t for t in all_themes if t["name"] != theme["name"]]
-        other_themes_text = "\n".join([f"- {t['name']}: {t['description']}" for t in other_themes])
-        codes_text = "\n".join([f"- {code['description']}" for code in original_codes])
-        theme_codes_text = "\n".join([f"- {code}" for code in theme.get("codes", [])])
-
-        prompt = f"""你是一名质性研究者，正在评估访谈分析形成的主题。
-仅使用提供的主题和编码，不预设材料未说明的人群或研究主题。
-
-请依据以下四项标准评估主题：
-
-1. 覆盖度：{self.criteria.coverage}
-2. 概念清晰度：{self.criteria.actionability}
-3. 区分度：{self.criteria.distinctiveness}
-4. 相关性：{self.criteria.relevance}
-
-待评估主题：
-名称：{theme['name']}
-描述：{theme['description']}
-关联编码：
-{theme_codes_text}
-
-其他主题（用于比较区分度）：
-{other_themes_text}
-
-原始编码（用于检查覆盖度）：
-{codes_text}
-
-每项标准均需提供：
-- 1 到 5 分的整数评分（1 分较差，5 分优秀）
-- 解释评分依据的具体反馈
-- 低于 4 分时给出改进建议
-- 如果编码不足以支持某项判断，指出证据缺口，不编造依据
-- 反馈使用与主题和编码相同的语言
-
-同时判断：
-- 该主题是否需要修订（布尔值）
-- 具体的修订建议（列表）
-
-只返回符合以下结构的 JSON 对象，不添加解释或 Markdown；保留英文键名：
-{{
-  "coverage_score": 4,
-  "coverage_feedback": "覆盖度的具体反馈",
-  "actionability_score": 4,
-  "actionability_feedback": "概念清晰度的具体反馈",
-  "distinctiveness_score": 4,
-  "distinctiveness_feedback": "区分度的具体反馈",
-  "relevance_score": 4,
-  "relevance_feedback": "相关性的具体反馈",
-  "needs_refinement": false,
-  "refinement_suggestions": []
-}}
-"""
+        prompt = build_full_evaluation_prompt(
+            criteria=self.criteria,
+            theme=theme,
+            other_themes=other_themes,
+            original_codes=original_codes,
+        )
 
         if self.before_model_call:
             self.before_model_call(stage or f"评估主题 · {theme['name']}")
         response = self.client.chat.completions.create(
             model=self.model,
             messages=[
-                {"role": "system", "content": "你是一名质性研究者。仅依据提供的材料评估主题。"},
+                {"role": "system", "content": FULL_EVALUATION_SYSTEM_PROMPT},
                 {"role": "user", "content": prompt}
             ],
             temperature=0.2,

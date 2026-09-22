@@ -12,6 +12,8 @@ from openai import OpenAI
 from pydantic import BaseModel
 import json
 
+from prompts import REFINEMENT_SYSTEM_PROMPT, build_refinement_prompt
+
 
 class RefinementOperation(BaseModel):
     """Represents a refinement operation to perform."""
@@ -68,70 +70,19 @@ class RefinementAgent:
         Returns:
             RefinementPlan object
         """
-        themes_text = json.dumps(themes, ensure_ascii=False, indent=2)
-        evaluations_text = json.dumps(evaluation_results["theme_evaluations"], ensure_ascii=False, indent=2)
-        codes_text = "\n".join([f"- {code['description']}" for code in codes])
-
-        prompt = f"""你是一名质性研究者，正在根据评估反馈修订主题。
-
-请使用以下四种操作制定修订计划；"operation" 字段使用括号中的英文值：
-1. 增加（"add"）：补充评估中发现缺失的重要主题
-2. 拆分（"split"）：将包含多个概念的主题拆成不同主题
-3. 合并（"combine"）：合并重复或重叠的主题
-4. 删除（"delete"）：删除与材料无关或不能反映材料的主题
-
-当前主题：
-{themes_text}
-
-评估结果：
-{evaluations_text}
-
-总体反馈：
-{evaluation_results["global_feedback"]}
-
-原始编码（供参考）：
-{codes_text}
-
-要求：
-- 查看每个主题的评估反馈，找出任一标准低于 4 分的主题
-- 针对问题制定具体操作，优先顺序为删除、合并、拆分、增加
-- 拆分时创建 2 至 3 个概念不同的新主题；合并时创建一个涵盖相关概念的新主题
-- 增加主题时，从原始编码中识别遗漏的重要规律
-- 修订应改善覆盖度、概念清晰度、区分度和相关性
-- 所有新增或修改的主题都必须有提供的编码作为依据，不编造背景或证据
-- 新主题、操作理由及计划摘要使用与当前主题和编码相同的语言
-
-只返回符合以下结构的 JSON 对象，不添加解释或 Markdown；保留英文键名及操作值：
-{{
-  "operations": [
-    {{
-      "operation": "add",
-      "target_themes": [],
-      "rationale": "需要执行该操作的原因",
-      "new_theme": {{
-        "name": "新主题名称",
-        "description": "新主题描述",
-        "codes": ["相关的原始编码描述"]
-      }}
-    }}
-  ],
-  "summary": "修订计划的简短摘要"
-}}
-
-补充说明：
-- 无需修订时，"operations" 返回空数组
-- 删除操作的 "new_theme" 为 null
-- 拆分操作需要返回多条记录，各自提供不同的 "new_theme"
-- 合并操作提供一个合并后的 "new_theme"
-- 增加操作的 "target_themes" 可以为空数组，并提供 "new_theme"
-"""
+        prompt = build_refinement_prompt(
+            themes=themes,
+            theme_evaluations=evaluation_results["theme_evaluations"],
+            global_feedback=evaluation_results["global_feedback"],
+            codes=codes,
+        )
 
         if self.before_model_call:
             self.before_model_call("修订主题")
         response = self.client.chat.completions.create(
             model=self.model,
             messages=[
-                {"role": "system", "content": "你是一名质性研究者。仅依据提供的编码和评估反馈修订主题。"},
+                {"role": "system", "content": REFINEMENT_SYSTEM_PROMPT},
                 {"role": "user", "content": prompt}
             ],
             temperature=0.3,

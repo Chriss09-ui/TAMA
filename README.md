@@ -154,6 +154,7 @@ invalid key) stop the run instead of being silently ignored.
 - Multi-agent LLM architecture with coordinated Generation, Evaluation, and Refinement agents.
 - Human-in-the-loop design with clinician-defined goals, evaluation criteria, and final approval.
 - Decision-model integration: theme scores carry per-criterion confidence; low-confidence themes are flagged for human review.
+- Centralized prompts: all model instructions, evaluation rubrics, and connection-test questions live in `src/prompts.py`.
 - Quantitative evaluation using Jaccard similarity, hit rate, and embedding-based cosine similarity.
 - End-to-end thematic analysis completed in under ten minutes, reducing manual workload by more than 99%.
 

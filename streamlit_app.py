@@ -23,6 +23,11 @@ from tama import TAMAFramework
 from analysis_job import AnalysisJob
 from decisions import DecisionQuestion
 from decisions.jev_client import JevDecisionClient
+from prompts import (
+    API_CONNECTION_TEST_PROMPT,
+    JEV_CONNECTION_TEST_INSTRUCTIONS,
+    JEV_CONNECTION_TEST_STATE,
+)
 
 JEV_DECISION_MODE = "Jev（实验性）"
 
@@ -86,7 +91,7 @@ def check_api_connection(api_key: str, model: str, base_url: str | None, provide
     token_limit = {"max_completion_tokens": 256} if provider == "MiMo" else {"max_tokens": 128}
     response = client.chat.completions.create(
         model=api_model_name(provider, model),
-        messages=[{"role": "user", "content": "请回复 OK。"}],
+        messages=[{"role": "user", "content": API_CONNECTION_TEST_PROMPT}],
         **token_limit,
     )
     if not response.choices:
@@ -96,10 +101,10 @@ def check_api_connection(api_key: str, model: str, base_url: str | None, provide
 def check_jev_connection(api_key: str, base_url: str | None) -> None:
     """Send one minimal yes/no decision to the Jev System One endpoint."""
     client = JevDecisionClient(api_key=api_key, base_url=base_url, timeout=20.0, max_retries=0)
-    answers = client.ask("连接测试", {
+    answers = client.ask(JEV_CONNECTION_TEST_STATE, {
         "check": DecisionQuestion(
             key="check", kind="noul",
-            instructions="这是一次连接测试。请回答：1+1 是否等于 2？",
+            instructions=JEV_CONNECTION_TEST_INSTRUCTIONS,
         ),
     })
     answer = answers["check"]
