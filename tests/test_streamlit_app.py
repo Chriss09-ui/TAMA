@@ -160,6 +160,26 @@ class StreamlitAppTests(unittest.TestCase):
         self.assertFalse(app.exception)
         self.assertIn("请先粘贴访谈文本", app.error[0].value)
 
+    def test_page_shows_methodology_references_at_the_bottom(self):
+        with patch.dict(os.environ, {}, clear=True):
+            app = AppTest.from_file(str(APP_PATH)).run()
+
+        self.assertFalse(app.exception)
+        headings = [item.value for item in app.header]
+        self.assertLess(headings.index("1. 输入访谈材料"), headings.index("2. 运行分析"))
+        self.assertLess(headings.index("2. 运行分析"), headings.index("3. 分析结果"))
+        self.assertLess(headings.index("3. 分析结果"), headings.index("方法依据与参考文献"))
+        references = next(
+            item for item in app.expander if item.label == "查看切块策略说明和文献"
+        ).markdown[0].value
+        self.assertIn("TAMA 原始方法", references)
+        self.assertIn("Lost in the Middle", references)
+        self.assertIn("Token 用量计算", references)
+
+        app.text_area(key="transcript_text").set_value("访谈者：工作有什么变化？\n受访者：开始远程办公。 ").run()
+        self.assertIn("切块预估", [item.value for item in app.subheader])
+        self.assertTrue(any("预计" in item.value and "片段" in item.value for item in app.markdown))
+
     def test_analysis_displays_theme_without_network_request(self):
         result = {
             "session_name": "test-session",
@@ -310,6 +330,11 @@ class StreamlitAppTests(unittest.TestCase):
             try:
                 app.button(key="run_analysis").click().run(timeout=6)
                 self.assertTrue(first_started.wait(2))
+                self.assertTrue(app.selectbox(key="provider").disabled)
+                self.assertTrue(app.radio[0].disabled)
+                self.assertTrue(app.text_area(key="transcript_text").disabled)
+                self.assertTrue(app.text_input(key="model_MiMo").disabled)
+                self.assertTrue(app.number_input(key="max_workers").disabled)
                 app.button(key="pause_analysis").click().run()
                 self.assertTrue(app.session_state["analysis_job"].snapshot().pause_requested)
                 release_first.set()

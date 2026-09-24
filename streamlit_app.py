@@ -273,8 +273,7 @@ def build_result_docx(result: dict) -> bytes:
 
 def render_result(result: dict) -> None:
     """Display the latest analysis without exposing the API key."""
-    st.divider()
-    st.header("分析结果")
+    st.header("3. 分析结果")
     st.caption("最近一次成功运行")
 
     status = "达到评估标准" if result["accepted"] else "已达到最大评估轮次"
@@ -282,10 +281,10 @@ def render_result(result: dict) -> None:
     themes = result["final_themes"]
 
     st.success(f"分析完成 · {status}")
-    score_col, theme_col, round_col = st.columns(3)
+    score_col, theme_col = st.columns(2)
     score_col.metric("平均分", f"{score:.2f} / 5")
     theme_col.metric("主题数", len(themes))
-    round_col.metric("评估轮次", result["refinement_iterations"])
+    st.caption(f"评估轮次：{result['refinement_iterations']}")
 
     final_evaluation = result.get("final_evaluation") or {}
     if final_evaluation.get("global_feedback"):
@@ -328,34 +327,81 @@ def render_result(result: dict) -> None:
                         st.write(f"• {code}")
 
 
+def render_methodology_references() -> None:
+    """Show the methodological sources behind chunking and coding."""
+    st.divider()
+    st.header("方法依据与参考文献")
+    st.caption(
+        "文献支持的是“保留语义语境、控制上下文长度、再从片段中识别意义单元”等原则；"
+        "1200、1800、2600 等切块数值是本项目的工程参数，不是质性研究的统一标准。"
+    )
+    with st.expander("查看切块策略说明和文献"):
+        st.markdown(
+            """
+- **TAMA 原始方法**：将过长访谈分成较小片段，并尽量按段落、换行和访谈者标签等自然边界保留对话连贯性。[Xu et al. (2025), *TAMA: A Human-AI Collaborative Thematic Analysis Framework*](https://arxiv.org/abs/2503.20666)
+
+- **意义单元与编码**：文本片段可包含多个意义单元，编码应围绕相对完整的含义，避免单元过宽或过窄。[Graneheim & Lundman (2004), *Qualitative content analysis in nursing research*](https://pubmed.ncbi.nlm.nih.gov/14769454/)
+
+- **编码粒度**：有意义的编码文本通常短于一个段落、长于几个词，编码应表达完整思想。[Saunders et al. (2023), *Practical thematic analysis*](https://www.bmj.com/content/381/bmj-2022-074256)
+
+- **主题分析过程**：编码应覆盖整个数据集，后续主题需同时对照已编码摘录和完整数据集进行审查。[Braun & Clarke, *Doing Reflexive Thematic Analysis*](https://www.thematicanalysis.net/doing-reflexive-ta/)
+
+- **长上下文限制**：模型虽然可以接收很长的上下文，但对中间位置信息的利用可能明显下降。[Liu et al. (2023), *Lost in the Middle*](https://arxiv.org/abs/2307.03172)
+
+- **Token 长度估算**：DeepSeek 文档给出中英文字符到 token 的经验换算；本项目在此基础上增加余量，以兼容不同模型的分词差异。[DeepSeek API 文档：Token 用量计算](https://api-docs.deepseek.com/zh-cn/quick_start/token_usage/)
+"""
+        )
+
+
 def main() -> None:
-    st.set_page_config(page_title="TAMA · 主题分析", page_icon="📝", layout="centered")
+    st.set_page_config(page_title="TAMA · 主题分析", page_icon="📝", layout="wide")
+    st.markdown(
+        """
+        <style>
+        .block-container { max-width: 960px; padding-top: 2rem; padding-bottom: 4rem; }
+        @media (max-width: 640px) {
+            .block-container { padding-top: 1rem; }
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
     job = st.session_state.get("analysis_job")
     running = job is not None and not job.snapshot().done
 
     with st.sidebar:
-        st.header("模型设置")
+        st.header("分析设置")
+        st.subheader("模型连接")
         providers = {
             "DeepSeek": ("DEEPSEEK_API_KEY", "DeepSeek-V4.1-Flash"),
             "MiMo": ("MIMO_API_KEY", "mimo-v2.5-pro"),
             "OpenAI": ("OPENAI_API_KEY", "gpt-4o"),
         }
-        provider = st.selectbox("服务商", list(providers), key="provider")
+        provider = st.selectbox("服务商", list(providers), key="provider", disabled=running)
         env_name, default_model = providers[provider]
         saved_api_key = load_saved_api_key(provider)
-        api_key_input = st.text_input("API Key", type="password", key=f"api_key_{provider}")
-        if saved_api_key:
-            st.caption("已保存此服务商的 API Key；输入框留空时自动使用。")
+        api_key_input = st.text_input(
+            "API Key", type="password", key=f"api_key_{provider}", disabled=running,
+        )
+        if api_key_input.strip():
+            st.caption("本次使用输入框中的 API Key。点击保存后，下次打开仍可使用。")
+        elif saved_api_key:
+            st.caption("凭据来源：本机系统凭据库。输入框留空时自动使用。")
+        elif os.getenv(env_name, "").strip():
+            st.caption(f"凭据来源：环境变量 {env_name}。")
         else:
-            st.caption(f"留空时读取本机环境变量 {env_name}")
-        st.button(
-            "保存 API Key", key="save_api_key", on_click=save_api_key,
-            args=(provider,), disabled=running, use_container_width=True,
-        )
-        st.button(
-            "删除已保存 Key", key="delete_saved_api_key", on_click=delete_saved_api_key,
-            args=(provider,), disabled=running or not saved_api_key, use_container_width=True,
-        )
+            st.caption(f"尚未配置。可输入密钥，或设置 {env_name} 环境变量。")
+        save_col, delete_col = st.columns(2)
+        with save_col:
+            st.button(
+                "保存 API Key", key="save_api_key", on_click=save_api_key,
+                args=(provider,), disabled=running, use_container_width=True,
+            )
+        with delete_col:
+            st.button(
+                "删除已存 Key", key="delete_saved_api_key", on_click=delete_saved_api_key,
+                args=(provider,), disabled=running or not saved_api_key, use_container_width=True,
+            )
         notice = st.session_state.pop(f"api_key_notice_{provider}", None)
         if notice:
             kind, message = notice
@@ -373,7 +419,7 @@ def main() -> None:
             st.session_state["deepseek_display_migrated"] = True
         if model_key not in st.session_state:
             st.session_state[model_key] = default_model
-        model = st.text_input("模型名称", key=model_key)
+        model = st.text_input("模型名称", key=model_key, disabled=running)
         if provider == "DeepSeek":
             st.caption("DeepSeek-V4.1-Flash 的 API 模型 ID 为 deepseek-flash；调用时自动转换。")
         base_url = None
@@ -383,6 +429,7 @@ def main() -> None:
                 value=os.getenv("MIMO_BASE_URL") or "https://api.xiaomimimo.com/v1",
                 help="使用 Token Plan 时，填写控制台提供的专属 OpenAI 兼容地址。",
                 key="mimo_base_url",
+                disabled=running,
             )
         elif provider == "DeepSeek":
             base_url = st.text_input(
@@ -390,12 +437,13 @@ def main() -> None:
                 value=os.getenv("DEEPSEEK_BASE_URL") or "https://api.deepseek.com",
                 help="DeepSeek 官方 OpenAI 兼容接口地址；可按需填写自定义地址。",
                 key="deepseek_base_url",
+                disabled=running,
             )
 
         api_key = api_key_input.strip() or saved_api_key or os.getenv(env_name, "").strip()
         endpoint = base_url.strip() if base_url is not None else None
 
-        st.subheader("决策设置")
+        st.subheader("决策接口")
         decision_mode = st.selectbox(
             "决策模式", ["跟随主模型", JEV_DECISION_MODE], key="decision_mode",
             disabled=running,
@@ -411,15 +459,18 @@ def main() -> None:
                 st.caption("已保存 Jev API Key；输入框留空时自动使用。")
             else:
                 st.caption("留空时读取本机环境变量 JEV_API_KEY。")
-            st.button(
-                "保存 Jev Key", key="save_jev_api_key", on_click=save_api_key,
-                args=("Jev",), disabled=running, use_container_width=True,
-            )
-            st.button(
-                "删除已保存 Jev Key", key="delete_saved_jev_api_key",
-                on_click=delete_saved_api_key, args=("Jev",),
-                disabled=running or not saved_jev_api_key, use_container_width=True,
-            )
+            jev_save_col, jev_delete_col = st.columns(2)
+            with jev_save_col:
+                st.button(
+                    "保存 Jev Key", key="save_jev_api_key", on_click=save_api_key,
+                    args=("Jev",), disabled=running, use_container_width=True,
+                )
+            with jev_delete_col:
+                st.button(
+                    "删除已存 Key", key="delete_saved_jev_api_key",
+                    on_click=delete_saved_api_key, args=("Jev",),
+                    disabled=running or not saved_jev_api_key, use_container_width=True,
+                )
             jev_notice = st.session_state.pop("api_key_notice_Jev", None)
             if jev_notice:
                 kind, message = jev_notice
@@ -437,7 +488,10 @@ def main() -> None:
             st.caption("可选环境变量：JEV_BASE_URL、JEV_MODEL。")
 
         st.caption("测试会发送一次简短模型请求，可能产生少量费用。")
-        if st.button("测试 API 连接", key="test_api_connection", disabled=running):
+        if st.button(
+            "测试 API 连接", key="test_api_connection", disabled=running,
+            use_container_width=True,
+        ):
             if not api_key:
                 st.error(f"请填写 API Key，或设置 {env_name} 环境变量。")
             elif not model.strip():
@@ -465,7 +519,7 @@ def main() -> None:
                     st.success("连接成功，密钥、地址和模型可用。")
 
         st.divider()
-        st.header("运行设置")
+        st.subheader("切块与评估")
         chunk_strategy_label = st.selectbox(
             "切块策略",
             list(CHUNK_STRATEGIES),
@@ -494,10 +548,14 @@ def main() -> None:
             key="max_workers", disabled=running,
             help="仅用于相互独立的片段编码和主题评估请求；遇到接口限流时可调低。",
         )
-        max_iterations = st.number_input("最多评估轮次", min_value=1, max_value=10, value=5)
+        max_iterations = st.number_input(
+            "最多评估轮次", min_value=1, max_value=10, value=5,
+            disabled=running,
+        )
         save_intermediate = st.checkbox(
             "保存阶段文件",
             value=False,
+            disabled=running,
             help="包含文本片段、编码及逐轮评估，保存在本机 outputs 目录。",
         )
         with st.expander("高级设置"):
@@ -507,12 +565,16 @@ def main() -> None:
                 help="评估判断的置信度低于该值时，会请求详细反馈并在结果中标记为建议人工复核。",
             )
 
-    st.caption("TAMA / THEMATIC ANALYSIS")
+    st.caption("TAMA · 质性研究工作台")
     st.title("访谈主题分析")
-    st.write("输入访谈逐字稿，查看模型生成的编码、主题及评估结果。")
+    st.write("输入访谈逐字稿，依次完成切块、提取编码、归纳主题和评估修订。")
 
-    st.header("访谈文本")
-    source = st.radio("输入方式", ["粘贴文本", "上传文件"], horizontal=True)
+    st.divider()
+    st.header("1. 输入访谈材料")
+    source = st.radio(
+        "输入方式", ["粘贴文本", "上传文件"], horizontal=True,
+        disabled=running,
+    )
     pasted_text = ""
     uploaded_file = None
     transcript = ""
@@ -520,12 +582,16 @@ def main() -> None:
     if source == "粘贴文本":
         pasted_text = st.text_area(
             "逐字稿内容",
-            height=260,
-            placeholder="在这里粘贴访谈逐字稿……",
+            height=320,
+            placeholder="访谈者：最近工作方式有什么变化？\n受访者：我开始远程办公，通勤时间少了……",
             key="transcript_text",
+            disabled=running,
         )
     else:
-        uploaded_file = st.file_uploader("选择 UTF-8 TXT 或 Word DOCX 文件", type=["txt", "docx"])
+        uploaded_file = st.file_uploader(
+            "选择 UTF-8 TXT 或 Word DOCX 文件", type=["txt", "docx"],
+            disabled=running,
+        )
 
     try:
         transcript = read_transcript(source, pasted_text, uploaded_file)
@@ -543,60 +609,62 @@ def main() -> None:
             manual_chunk_size=int(chunk_size) if chunk_size is not None else None,
         )
         size_unit = "字词" if preview.measurement_unit == "text_units" else "估算模型文本单位"
-        st.caption(
-            f"已读取 {preview.total_characters} 个字符 · 预计 {preview.num_chunks} 个片段 · "
-            f"每片目标约 {preview.target_size} {size_unit} · 上限 {preview.hard_limit}"
-        )
-        st.caption("实际切点会优先保留完整问答、段落、说话人轮次和句子。")
+        with st.container(border=True):
+            st.subheader("切块预估")
+            st.write(f"已读取 **{preview.total_characters:,} 个字符** · 预计 **{preview.num_chunks} 个片段**")
+            st.caption(
+                f"每片目标约 {preview.target_size} {size_unit}，上限 {preview.hard_limit}；"
+                "优先在问答、说话人轮次、段落或句末切分。"
+            )
 
-    st.caption("开始后，访谈文本会发送到所选模型服务进行分析。")
+    st.header("2. 运行分析")
+    st.caption("开始后，访谈文本会发送到所选模型服务。可在左侧测试接口并调整分析参数。")
     if st.button("开始分析", type="primary", use_container_width=True, key="run_analysis", disabled=running):
         if input_error:
             pass
+        elif not transcript:
+            st.error("请先粘贴访谈文本或上传 TXT/DOCX 文件。")
+        elif not api_key:
+            st.error(f"请填写 API Key，或设置 {env_name} 环境变量。")
+        elif not model.strip():
+            st.error("请填写模型名称。")
+        elif base_url is not None and not endpoint:
+            st.error("请填写接口地址。")
+        elif decision_mode == JEV_DECISION_MODE and not jev_api_key:
+            st.error("决策模式为 Jev 时，请填写 Jev API Key，或设置 JEV_API_KEY 环境变量。")
         else:
-            if not transcript:
-                st.error("请先粘贴访谈文本或上传 TXT/DOCX 文件。")
-            elif not api_key:
-                st.error(f"请填写 API Key，或设置 {env_name} 环境变量。")
-            elif not model.strip():
-                st.error("请填写模型名称。")
-            elif base_url is not None and not endpoint:
-                st.error("请填写接口地址。")
-            elif decision_mode == JEV_DECISION_MODE and not jev_api_key:
-                st.error("决策模式为 Jev 时，请填写 Jev API Key，或设置 JEV_API_KEY 环境变量。")
-            else:
-                decision_provider = None
-                if decision_mode == JEV_DECISION_MODE:
-                    decision_provider = JevDecisionClient(
-                        api_key=jev_api_key,
-                        base_url=os.getenv("JEV_BASE_URL") or None,
-                        model=os.getenv("JEV_MODEL") or None,
-                    )
+            decision_provider = None
+            if decision_mode == JEV_DECISION_MODE:
+                decision_provider = JevDecisionClient(
+                    api_key=jev_api_key,
+                    base_url=os.getenv("JEV_BASE_URL") or None,
+                    model=os.getenv("JEV_MODEL") or None,
+                )
 
-                def run(checkpoint):
-                    framework = TAMAFramework(
-                        api_key=api_key,
-                        model=api_model_name(provider, model),
-                        base_url=endpoint,
-                        chunk_size=int(chunk_size) if chunk_size is not None else None,
-                        chunk_strategy=chunk_strategy,
-                        max_workers=int(max_workers),
-                        max_iterations=int(max_iterations),
-                        decision_provider=decision_provider,
-                        confidence_threshold=float(confidence_threshold),
-                        output_dir=str(ROOT / "outputs"),
-                    )
-                    return framework.run_analysis(
-                        transcript=transcript,
-                        save_intermediate=save_intermediate,
-                        before_model_call=checkpoint,
-                    )
+            def run(checkpoint):
+                framework = TAMAFramework(
+                    api_key=api_key,
+                    model=api_model_name(provider, model),
+                    base_url=endpoint,
+                    chunk_size=int(chunk_size) if chunk_size is not None else None,
+                    chunk_strategy=chunk_strategy,
+                    max_workers=int(max_workers),
+                    max_iterations=int(max_iterations),
+                    decision_provider=decision_provider,
+                    confidence_threshold=float(confidence_threshold),
+                    output_dir=str(ROOT / "outputs"),
+                )
+                return framework.run_analysis(
+                    transcript=transcript,
+                    save_intermediate=save_intermediate,
+                    before_model_call=checkpoint,
+                )
 
-                st.session_state.pop("analysis_result", None)
-                job = AnalysisJob(run)
-                st.session_state["analysis_job"] = job
-                job.start()
-                st.rerun()
+            st.session_state.pop("analysis_result", None)
+            job = AnalysisJob(run)
+            st.session_state["analysis_job"] = job
+            job.start()
+            st.rerun()
 
     if job is not None and job.snapshot().done:
         snapshot = job.snapshot()
@@ -615,11 +683,16 @@ def main() -> None:
     elif running:
         render_active_job()
 
+    st.divider()
     if "analysis_result" in st.session_state:
         render_result(st.session_state["analysis_result"])
     else:
-        st.divider()
-        st.info("运行分析后，主题和关联编码会显示在这里。")
+        st.header("3. 分析结果")
+        with st.container(border=True):
+            st.subheader("尚无分析结果")
+            st.write("完成分析后，这里会显示主题、关联编码和评估结果，并提供 Word 报告与 JSON 数据下载。")
+
+    render_methodology_references()
 
 
 if __name__ == "__main__":
