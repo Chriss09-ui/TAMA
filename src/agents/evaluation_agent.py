@@ -25,6 +25,7 @@ from prompts import (
     build_evaluation_question_instructions,
     build_full_evaluation_prompt,
 )
+from research_profile import ResearchProfile
 
 
 class EvaluationCriteria(BaseModel):
@@ -67,6 +68,16 @@ class OverallEvaluation(BaseModel):
     global_feedback: str
 
 
+CRITERION_KEYS = ("coverage", "actionability", "distinctiveness", "relevance")
+
+
+def criterion_score(evaluation: EvaluationResult, key: str) -> float:
+    weighted_scores = getattr(evaluation, "weighted_scores", None)
+    if weighted_scores is not None:
+        return weighted_scores[key]
+    return float(getattr(evaluation, f"{key}_score"))
+
+
 class EvaluationAgent:
     """
     Evaluation Agent that assesses themes based on four criteria:
@@ -87,6 +98,7 @@ class EvaluationAgent:
         max_workers: int = 4,
         decision_provider: Optional[DecisionProvider] = None,
         confidence_threshold: float = 0.7,
+        study: Optional[ResearchProfile] = None,
     ):
         """
         Initialize the Evaluation Agent.
@@ -114,6 +126,7 @@ class EvaluationAgent:
         self.decision_provider = decision_provider
         self.confidence_threshold = confidence_threshold
         self.before_model_call = None
+        self.study = study or ResearchProfile()
 
         # Use expert-provided criteria or defaults
         if expert_criteria:
@@ -142,8 +155,24 @@ class EvaluationAgent:
             EvaluationResult object
         """
         if self.decision_provider is not None:
-            return self._evaluate_theme_with_decisions(theme, all_themes, original_codes)
-        return self._evaluate_theme_full(theme, all_themes, original_codes)
+            return self._evaluate_theme_with_decisions(theme, all_themes, self._compact_codes(theme, original_codes))
+        return self._evaluate_theme_full(theme, all_themes, self._compact_codes(theme, original_codes))
+
+    @staticmethod
+    def _compact_codes(theme, codes):
+        linked = set(theme.get("code_ids") or [])
+        return [
+            {
+                "description": code.get("description"),
+                **({"code_id": code["code_id"]} if "code_id" in code else {}),
+                **({"excerpt": str(code.get("excerpt"))[:180]} if code.get("code_id") in linked and code.get("excerpt") else {}),
+                **({"verification_status": code.get("verification_status")} if code.get("code_id") in linked else {}),
+                **({"statement_type": code.get("statement_type")} if code.get("code_id") in linked and code.get("statement_type") else {}),
+                **({"focus": code.get("focus")} if code.get("code_id") in linked and code.get("focus") else {}),
+                **({"open_question": code.get("open_question")} if code.get("code_id") in linked and code.get("open_question") else {}),
+            }
+            for code in codes
+        ]
 
     def _evaluate_theme_with_decisions(
         self,
@@ -154,15 +183,10 @@ class EvaluationAgent:
         """Score the theme with typed decisions; write feedback only when needed."""
         other_themes = [t for t in all_themes if t["name"] != theme["name"]]
         state = {
-            "theme": {
-                "name": theme["name"],
-                "description": theme["description"],
-                "codes": theme.get("codes", []),
-            },
-            "other_themes": [
-                {"name": t["name"], "description": t["description"]} for t in other_themes
-            ],
-            "original_codes": [code["description"] for code in original_codes],
+            "theme": theme,
+            "other_themes": other_themes,
+            "original_codes": original_codes,
+            "research_focus": self.study.prompt_section(),
         }
         scale = list(EVALUATION_SCALE)
         instructions = build_evaluation_question_instructions(self.criteria)
@@ -238,7 +262,13 @@ class EvaluationAgent:
             feedback = self._generate_detailed_feedback(
                 theme, other_themes, original_codes, weighted_scores,
             )
-            needs_refinement = feedback["needs_refinement"]
+            # The prose model can add a concern, but must not cancel a typed
+            # decision or a criterion that scored below the threshold.
+            needs_refinement = (
+                needs_refinement
+                or feedback["needs_refinement"]
+                or any(weighted_scores[key] < 4.0 for key in score_keys)
+            )
             feedback_source = "llm"
         else:
             feedback = {
@@ -283,6 +313,7 @@ class EvaluationAgent:
             other_themes=other_themes,
             original_codes=original_codes,
             scores=scores,
+            study=self.study,
         )
 
         response = self.client.chat.completions.create(
@@ -329,6 +360,7 @@ class EvaluationAgent:
             theme=theme,
             other_themes=other_themes,
             original_codes=original_codes,
+            study=self.study,
         )
 
         if self.before_model_call:
@@ -402,10 +434,16 @@ class EvaluationAgent:
 
         # Calculate average score
         average_score = sum(e.overall_score for e in theme_evaluations) / len(theme_evaluations)
-        is_acceptable = average_score >= acceptance_threshold
+        is_acceptable = average_score >= acceptance_threshold and all(
+            not evaluation.needs_refinement
+            and all(criterion_score(evaluation, key) >= acceptance_threshold for key in CRITERION_KEYS)
+            for evaluation in theme_evaluations
+        )
 
         # Generate global feedback
-        global_feedback = self._generate_global_feedback(theme_evaluations, average_score, is_acceptable)
+        global_feedback = self._generate_global_feedback(
+            theme_evaluations, average_score, is_acceptable, acceptance_threshold,
+        )
 
         overall_eval = OverallEvaluation(
             theme_evaluations=theme_evaluations,
@@ -420,7 +458,8 @@ class EvaluationAgent:
         self,
         evaluations: List[EvaluationResult],
         average_score: float,
-        is_acceptable: bool
+        is_acceptable: bool,
+        acceptance_threshold: float = 4.0,
     ) -> str:
         """
         Generate global feedback summarizing the evaluation.
@@ -433,21 +472,25 @@ class EvaluationAgent:
         Returns:
             Global feedback string
         """
-        themes_needing_refinement = [e for e in evaluations if e.needs_refinement]
+        themes_needing_refinement = [
+            evaluation for evaluation in evaluations
+            if evaluation.needs_refinement
+            or any(criterion_score(evaluation, key) < acceptance_threshold for key in CRITERION_KEYS)
+        ]
 
         if is_acceptable:
             feedback = f"已达标：主题平均分为 {average_score:.2f}/5.0，达到验收标准。"
             if themes_needing_refinement:
                 feedback += f"仍有 {len(themes_needing_refinement)} 个主题可进一步完善。"
         else:
-            feedback = f"需要修订：主题平均分为 {average_score:.2f}/5.0，低于验收标准。"
+            feedback = f"需要修订：主题平均分为 {average_score:.2f}/5.0，尚未满足逐项验收标准。"
             feedback += f"其中 {len(themes_needing_refinement)} 个主题需要修订。"
 
             # Summarize common issues
-            coverage_issues = sum(1 for e in evaluations if e.coverage_score < 4)
-            actionability_issues = sum(1 for e in evaluations if e.actionability_score < 4)
-            distinctiveness_issues = sum(1 for e in evaluations if e.distinctiveness_score < 4)
-            relevance_issues = sum(1 for e in evaluations if e.relevance_score < 4)
+            coverage_issues = sum(1 for e in evaluations if criterion_score(e, "coverage") < acceptance_threshold)
+            actionability_issues = sum(1 for e in evaluations if criterion_score(e, "actionability") < acceptance_threshold)
+            distinctiveness_issues = sum(1 for e in evaluations if criterion_score(e, "distinctiveness") < acceptance_threshold)
+            relevance_issues = sum(1 for e in evaluations if criterion_score(e, "relevance") < acceptance_threshold)
 
             issues = []
             if coverage_issues > 0:
@@ -472,7 +515,8 @@ class EvaluationAgent:
         self,
         themes: List[Dict[str, Any]],
         codes: List[Dict[str, Any]],
-        save_path: str = None
+        save_path: str = None,
+        acceptance_threshold: float = 4.0,
     ) -> Dict[str, Any]:
         """
         Run the evaluation process on generated themes.
@@ -485,7 +529,7 @@ class EvaluationAgent:
         Returns:
             Dictionary containing evaluation results
         """
-        overall_eval = self.evaluate_all_themes(themes, codes)
+        overall_eval = self.evaluate_all_themes(themes, codes, acceptance_threshold)
 
         result = {
             "theme_evaluations": [e.model_dump() for e in overall_eval.theme_evaluations],

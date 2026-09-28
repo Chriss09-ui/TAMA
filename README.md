@@ -7,7 +7,7 @@
 
 ## Overview
 
-TAMA is a human–AI collaborative framework for inductive thematic analysis of long, qualitative clinical interview transcripts. It uses a structured multi-agent workflow—Generation, Evaluation, and Refinement agents—combined with clinician-defined criteria to produce accurate, distinct, and clinically relevant themes. The framework reduces manual coding times by more than 99% while improving thematic coverage, distinctiveness, and alignment with expert-generated themes. TAMA was evaluated on de-identified interviews from parents of children with congenital heart disease and outperformed single-agent LLM baselines across multiple quantitative metrics.
+This repository implements a human–AI workflow for qualitative interview analysis. Generation, Evaluation, and Refinement agents extract grounded codes, propose themes, assess them, and revise them. The default profile is topic-neutral. An optional enterprise-evidence profile supplies a specific research question and focus areas. Model outputs and scores require researcher review. Quantitative metrics reported in the TAMA paper are not implemented in this repository.
 
 ## Quick Start
 
@@ -75,14 +75,21 @@ DOCX body paragraphs and table rows are read in document order; scanned pages
 or images need OCR before analysis. Select MiMo,
 DeepSeek, or OpenAI in the sidebar, then enter the API key or set the selected
 provider's `MIMO_API_KEY`, `DEEPSEEK_API_KEY`, or `OPENAI_API_KEY` environment
-variable. Results appear on the page and are saved
-under `outputs/`. The app listens on `127.0.0.1` for local use.
+variable. Results appear on the page. Local output is optional and off by
+default in the web interface. The app listens on `127.0.0.1` for local use.
 
 After analysis, use **保存 Word 报告（DOCX）** to download a readable report with
 the final themes, descriptions, and associated codes. Use **保存完整数据（JSON）**
-to download the complete result for later processing. The framework also
-automatically writes `00_final_results.json` and `00_summary.txt` in the
-session's `outputs/` directory.
+to download the complete result for later processing. These downloads contain
+verbatim excerpts when present. Enable **保存本地结果** to write
+`00_final_results.json` and `00_summary.txt` under `outputs/`.
+**本地结果移除逐字引文** removes `excerpt` fields from the saved JSON; it cannot
+be combined with stage files. For no local transcript-derived files, leave both
+local saving and stage files off. The transcript still goes to the selected
+model service and the result remains in the local service process until it
+restarts or a new run replaces it.
+Use **清除服务内结果** after downloading to discard the latest in-memory
+result without restarting the service.
 
 To keep an API key across browser and app restarts, enter it in the sidebar and
 click **保存 API Key**. The key is stored in the operating system credential store
@@ -94,8 +101,10 @@ key, and a saved key takes precedence over the provider's environment variable.
 Use **测试 API 连接** in the sidebar to send one short request with the current
 key, model, and endpoint; the provider may charge for it. During analysis,
 **暂停分析** waits for any request already in progress to finish, then stops
-before the next model request. **继续分析** resumes the same run. Keep the
-browser page and local Streamlit service open while the analysis runs.
+before the next model request. **继续分析** resumes the same run. **取消分析**
+stops at the next request boundary. Refreshing the browser reconnects to the
+running job and its result; keep the local Streamlit service running. An
+already-sent request may finish and be charged before pause or cancellation.
 
 Choose **切块策略** in the sidebar before starting analysis. The default
 **自动 · 均衡** mode calculates a document-specific target from the complete
@@ -119,7 +128,9 @@ recorded as `configuration.max_workers` in the final JSON result.
 
 Theme evaluation uses a hybrid two-stage flow. A decision provider first
 answers typed questions for each theme (four 1–5 criterion scores plus a
-yes/no refinement decision), each with a confidence value. Themes that pass
+yes/no refinement decision). Score answers include confidence; Jev's Noul
+answer supplies only the probability of "yes", so the app derives a separate
+certainty proxy from its distance to 0.5. Themes that pass
 every criterion with confident decisions skip the expensive feedback call;
 themes with any score below 4, a refinement decision, or a confidence below
 the threshold get a second call that writes feedback text and refinement
@@ -137,7 +148,10 @@ Two decision providers are available:
   Jev API key in the sidebar; it can be stored in the system credential vault.
   `JEV_API_KEY` remains available as a fallback, with optional `JEV_BASE_URL`
   and `JEV_MODEL`. The sidebar's **测试 API 连接** verifies the decision
-  endpoint separately.
+  endpoint separately. Jev evaluates themes; the main text model still
+  extracts codes, generates themes, and writes detailed feedback. Jev does
+  not generate the qualitative analysis text. TypeSafe notes that accuracy
+  on Chinese text needs validation with the user's own examples.
 
 The sidebar's **决策模式** selects the provider. The confidence threshold
 lives under **高级设置** (default 0.7). Saved results record the provider and
@@ -147,7 +161,10 @@ threshold under `configuration.decision_provider` /
 `weighted_scores`, `flagged_for_review`, and
 `feedback_source` (`llm`, `placeholder`, or `fallback`) under
 `final_evaluation.theme_evaluations` and, when stage files are enabled, in
-`02_evaluation_iter*.json`. If a decision request fails with a recoverable
+`02_evaluation_iter*.json`. The run is accepted only when the average and
+every criterion for every theme meet the threshold and no theme needs
+refinement. A positive typed refinement decision cannot be cancelled by the
+main model's prose feedback. If a decision request fails with a recoverable
 error, the theme falls back to the legacy single-call evaluation and the
 result is marked `fallback`. Jev configuration errors (for example an
 invalid key) stop the run instead of being silently ignored.
@@ -155,11 +172,10 @@ invalid key) stop the run instead of being silently ignored.
 ## Key Features
 
 - Multi-agent LLM architecture with coordinated Generation, Evaluation, and Refinement agents.
-- Human-in-the-loop design with clinician-defined goals, evaluation criteria, and final approval.
+- Researcher-configured study focus and evaluation criteria; final interpretation remains with the researcher.
 - Decision-model integration: theme scores carry per-criterion confidence; low-confidence themes are flagged for human review.
 - Centralized prompts: all model instructions, evaluation rubrics, and connection-test questions live in `src/prompts.py`.
-- Quantitative evaluation using Jaccard similarity, hit rate, and embedding-based cosine similarity.
-- End-to-end thematic analysis completed in under ten minutes, reducing manual workload by more than 99%.
+- Duplicate-code compaction, batched theme synthesis, and score-history early stopping.
 
 ## Architecture
 
@@ -221,9 +237,12 @@ print(f"Final score: {result['metadata']['final_average_score']:.2f}/5.0")
 ### Custom Evaluation Criteria
 
 The runtime instructions are written in Chinese. Generated codes, themes, and
-feedback follow the language of the supplied interview text. The prompts make no
-assumptions about the topic. Set `expert_criteria` to reflect a particular study's
-research questions when needed. The bundled sample transcript is a clinical example.
+feedback follow the language of the supplied interview text. The default
+`generic` profile does not assume a topic. Select `enterprise_evidence` to
+study specific capabilities, internal evidence, holders, public information,
+and information gaps. Both profiles accept `research_question`, `focus_areas`,
+and `expert_criteria`; focus areas are guidance, not a requirement to find
+them in every interview. The bundled sample transcript is a clinical example.
 
 ```python
 # Define study-specific criteria from researchers
@@ -236,30 +255,42 @@ expert_criteria = {
 
 tama = TAMAFramework(
     api_key=api_key,
+    profile="generic",  # or "enterprise_evidence"
+    research_question="受访者如何理解这段经历？",
+    focus_areas=["决策过程", "不确定性"],
     expert_criteria=expert_criteria
 )
 ```
 
 ### Output Structure
 
-Results are saved to `outputs/[session_name]/`:
-- `00_final_results.json` - Complete analysis results
-- `00_summary.txt` - Human-readable summary
-- `01_generation.json` - Initial generation output
-- `02_evaluation_iter*.json` - Evaluation results per iteration
-- `03_refinement_iter*.json` - Refinement operations per iteration
+`TAMAFramework.run_analysis` saves final files by default for API callers,
+while stage-file saving defaults to off. Pass `save_final=False` for an
+in-memory run.
+Pass `redact_saved_quotes=True, save_intermediate=False` to remove explicit
+`excerpt` fields from saved JSON. This does not guarantee removal of quotations
+embedded in model-written descriptions; use in-memory mode when no local
+interview words may be retained. When enabled, files under
+`outputs/[session_name]/` are:
+
+- `00_final_results.json` and `00_summary.txt`: final result
+- `01_generation.json`: chunks and codes, only with `save_intermediate=True`
+- `02_evaluation_iter*.json`, `03_refinement_iter*.json`: iterative audit files, only with `save_intermediate=True`
+
+Names generated automatically include a random suffix. A supplied name that
+already exists receives a suffix instead of overwriting an earlier run.
 
 ## Framework Components
 
 ### 1. Generation Agent
 - **Chunking**: Dynamically sizes model windows and preserves natural transcript boundaries
 - **Coding**: Extracts codes (<25 words) from each chunk
-- **Theme Generation**: Synthesizes codes into themes (~25 words)
+- **Theme Generation**: Collapses identical labels, synthesizes at most 40 distinct codes per batch, then consolidates candidate themes and records an initial analytic storyline
 
 ### 2. Evaluation Agent
 Evaluates themes using four criteria:
 - **Coverage**: Comprehensively captures important patterns
-- **Actionability**: Encapsulates single, clear concept
+- **Actionability**: Expresses a shared meaning pattern rather than a topic or interview-guide section
 - **Distinctiveness**: Clearly distinct from other themes
 - **Relevance**: Accurately reflects the data
 
@@ -274,3 +305,13 @@ Refines themes using four operations:
 The framework iterates through evaluation and refinement until:
 - Themes achieve acceptance threshold (default: 4.0/5.0), OR
 - Maximum iterations reached (default: 5)
+- Average score fails to improve by more than 0.05 for two consecutive evaluations (configurable with `early_stop_patience`)
+
+Each result records `score_history` and `stop_reason`. Scores are model
+judgments, not calibrated measures of qualitative validity.
+
+### Run tests
+
+From this checkout, use `.venv/bin/python -m unittest discover -s tests`.
+The existing `.venv` was created without `pip`; if dependencies need to be
+installed into it, use `uv pip install --python .venv/bin/python -r requirements.txt`.

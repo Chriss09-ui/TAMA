@@ -7,20 +7,21 @@ Refines themes based on evaluation feedback using four operations:
 - Delete: Delete irrelevant themes
 """
 
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Literal
 from openai import OpenAI
 from pydantic import BaseModel
 import json
 
 from prompts import REFINEMENT_SYSTEM_PROMPT, build_refinement_prompt
+from research_profile import ResearchProfile
 
 
 class RefinementOperation(BaseModel):
     """Represents a refinement operation to perform."""
-    operation: str  # "add", "split", "combine", "delete"
+    operation: Literal["add", "split", "combine", "delete"]
     target_themes: List[str]  # Theme names to operate on
     rationale: str
-    new_theme: Dict[str, Any] = None  # For add/split operations
+    new_theme: Optional[Dict[str, Any]] = None
 
 
 class RefinementPlan(BaseModel):
@@ -40,7 +41,8 @@ class RefinementAgent:
     4. DELETE: Delete irrelevant themes (low relevance)
     """
 
-    def __init__(self, api_key: str, model: str = "gpt-4o", base_url: Optional[str] = None):
+    def __init__(self, api_key: str, model: str = "gpt-4o", base_url: Optional[str] = None,
+                 study: Optional[ResearchProfile] = None):
         """
         Initialize the Refinement Agent.
 
@@ -52,6 +54,7 @@ class RefinementAgent:
         self.client = OpenAI(api_key=api_key, base_url=base_url)
         self.model = model
         self.before_model_call = None
+        self.study = study or ResearchProfile()
 
     def create_refinement_plan(
         self,
@@ -74,7 +77,11 @@ class RefinementAgent:
             themes=themes,
             theme_evaluations=evaluation_results["theme_evaluations"],
             global_feedback=evaluation_results["global_feedback"],
-            codes=codes,
+            codes=[{
+                "code_id": code.get("code_id"), "description": code.get("description"),
+                "excerpt": str(code.get("excerpt") or "")[:120],
+            } for code in codes],
+            study=self.study,
         )
 
         if self.before_model_call:
@@ -123,6 +130,14 @@ class RefinementAgent:
         refined_themes = themes.copy()
 
         for operation in plan.operations:
+            if operation.operation in ("add", "split", "combine") and not (
+                isinstance(operation.new_theme, dict) and operation.new_theme.get("name")
+            ):
+                raise ValueError(f"{operation.operation} operation requires a named new_theme")
+            if operation.operation == "split" and len(operation.target_themes) != 1:
+                raise ValueError("split operation requires one target theme")
+            if operation.operation == "combine" and len(operation.target_themes) < 2:
+                raise ValueError("combine operation requires at least two target themes")
             if operation.operation == "delete":
                 refined_themes = self._apply_delete(refined_themes, operation)
             elif operation.operation == "combine":

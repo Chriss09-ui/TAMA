@@ -6,9 +6,10 @@ Handles chunking, coding, and initial theme generation from interview transcript
 from bisect import bisect_right
 from typing import List, Dict, Any, Optional
 from openai import OpenAI
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 import json
 from concurrent.futures import ThreadPoolExecutor
+import re
 
 from chunking import (
     ANALYSIS_UNIT_PATTERN,
@@ -21,7 +22,12 @@ from prompts import (
     THEME_GENERATION_SYSTEM_PROMPT,
     build_code_extraction_prompt,
     build_theme_generation_prompt,
+    build_theme_consolidation_prompt,
 )
+from research_profile import ResearchProfile
+
+
+THEME_BATCH_SIZE = 40
 
 
 class Chunk(BaseModel):
@@ -40,6 +46,13 @@ class Code(BaseModel):
     code_id: int
     description: str
     source_chunks: List[int]
+    excerpt: Optional[str] = None
+    source_start: Optional[int] = None
+    source_end: Optional[int] = None
+    focus: List[str] = Field(default_factory=list)
+    statement_type: str = "undetermined"
+    verification_status: str = "unknown"
+    open_question: str = ""
 
 
 class Theme(BaseModel):
@@ -47,6 +60,10 @@ class Theme(BaseModel):
     name: str
     description: str
     codes: List[str]
+    kind: str = "pattern"
+    code_ids: List[int] = Field(default_factory=list)
+    counterexample_code_ids: List[int] = Field(default_factory=list)
+    open_questions: List[str] = Field(default_factory=list)
 
 
 class GenerationAgent:
@@ -61,6 +78,7 @@ class GenerationAgent:
         self, api_key: str, model: str = "gpt-4o", base_url: Optional[str] = None,
         chunk_size: Optional[int] = None, max_workers: int = 4,
         chunk_strategy: Optional[ChunkStrategy] = None,
+        study: Optional[ResearchProfile] = None,
     ):
         """
         Initialize the Generation Agent.
@@ -86,6 +104,8 @@ class GenerationAgent:
         self.max_workers = max_workers
         self.before_model_call = None
         self.last_chunk_plan = None
+        self.study = study or ResearchProfile()
+        self.analytic_storyline = ""
 
     def chunk_transcript(self, transcript: str) -> List[Chunk]:
         """
@@ -106,18 +126,23 @@ class GenerationAgent:
         self.last_chunk_plan = plan
         unit_ends = [match.end() for match in ANALYSIS_UNIT_PATTERN.finditer(normalized)]
 
-        return [
-            Chunk(
+        chunks = []
+        for chunk_id, span in enumerate(spans):
+            raw_text = normalized[span.start:span.end]
+            leading_space = len(raw_text) - len(raw_text.lstrip())
+            trailing_space = len(raw_text) - len(raw_text.rstrip())
+            start_char = span.start + leading_space
+            end_char = span.end - trailing_space
+            chunks.append(Chunk(
                 chunk_id=chunk_id,
-                text=normalized[span.start:span.end].strip(),
-                start_word=bisect_right(unit_ends, span.start),
-                end_word=bisect_right(unit_ends, span.end),
-                start_char=span.start,
-                end_char=span.end,
+                text=normalized[start_char:end_char],
+                start_word=bisect_right(unit_ends, start_char),
+                end_word=bisect_right(unit_ends, end_char),
+                start_char=start_char,
+                end_char=end_char,
                 measured_size=span.measured_size,
-            )
-            for chunk_id, span in enumerate(spans)
-        ]
+            ))
+        return chunks
 
     def generate_codes_from_chunk(self, chunk: Chunk) -> List[Code]:
         """
@@ -130,7 +155,7 @@ class GenerationAgent:
         Returns:
             List of Code objects
         """
-        prompt = build_code_extraction_prompt(chunk.text)
+        prompt = build_code_extraction_prompt(chunk.text, self.study)
 
         if self.before_model_call:
             self.before_model_call(f"提取编码 · 片段 {chunk.chunk_id + 1}")
@@ -148,10 +173,25 @@ class GenerationAgent:
         codes = []
 
         for idx, code_data in enumerate(result.get("codes", [])):
+            excerpt = code_data.get("excerpt")
+            offset = chunk.text.find(excerpt) if isinstance(excerpt, str) and excerpt else -1
+            verified_excerpt = excerpt if offset >= 0 else None
+            open_question = str(code_data.get("open_question") or "")
+            if excerpt and offset < 0:
+                open_question = f"{open_question}；原文摘录未匹配到输入片段，需人工核对".strip("；")
+            elif not excerpt:
+                open_question = f"{open_question}；缺少逐字原文，需人工核对".strip("；")
             codes.append(Code(
                 code_id=idx,
                 description=code_data["description"],
-                source_chunks=[chunk.chunk_id]
+                source_chunks=[chunk.chunk_id],
+                excerpt=verified_excerpt,
+                source_start=chunk.start_char + offset if offset >= 0 else None,
+                source_end=chunk.start_char + offset + len(excerpt) if offset >= 0 else None,
+                focus=code_data.get("focus") or [],
+                statement_type=code_data.get("statement_type") or "undetermined",
+                verification_status=(code_data.get("verification_status") or "unknown") if offset >= 0 else "unknown",
+                open_question=open_question,
             ))
 
         return codes
@@ -195,31 +235,101 @@ class GenerationAgent:
         Returns:
             List of Theme objects
         """
-        prompt = build_theme_generation_prompt(code.description for code in codes)
+        # Collapse identical labels for synthesis while retaining every raw code.
+        canonical = {}
+        for code in codes:
+            key = re.sub(r"\s+", "", code.description).casefold()
+            if key not in canonical:
+                canonical[key] = {
+                    "code_id": code.code_id, "description": code.description,
+                    "excerpt": (code.excerpt or "")[:180], "focus": code.focus,
+                    "verification_status": code.verification_status,
+                    "duplicate_code_ids": [],
+                }
+            else:
+                canonical[key]["duplicate_code_ids"].append(code.code_id)
+        compact = list(canonical.values())
+        if len(compact) <= THEME_BATCH_SIZE:
+            result = self._request_themes(build_theme_generation_prompt(compact, self.study), "归纳主题")
+        else:
+            candidates = []
+            for start in range(0, len(compact), THEME_BATCH_SIZE):
+                batch = compact[start:start + THEME_BATCH_SIZE]
+                part = self._request_themes(
+                    build_theme_generation_prompt(batch, self.study),
+                    f"归纳主题 · 第 {start // THEME_BATCH_SIZE + 1} 组",
+                )
+                candidates.extend(part.get("themes", []))
+            while len(candidates) > THEME_BATCH_SIZE:
+                grouped = []
+                for start in range(0, len(candidates), THEME_BATCH_SIZE):
+                    part = self._request_themes(
+                        build_theme_consolidation_prompt(candidates[start:start + THEME_BATCH_SIZE], self.study),
+                        "合并候选主题",
+                    )
+                    grouped.extend(part.get("themes", []))
+                if len(grouped) >= len(candidates):
+                    raise ValueError("候选主题未能归并，请检查模型返回或增大主题分批上限。")
+                candidates = grouped
+            result = self._request_themes(
+                build_theme_consolidation_prompt(candidates, self.study), "合并候选主题",
+            )
+        self.analytic_storyline = result.get("analytic_storyline") or ""
+        themes = []
 
+        code_by_id = {code.code_id: code for code in codes}
+        ids_by_description = {}
+        for code in codes:
+            ids_by_description.setdefault(code.description, []).append(code.code_id)
+        duplicates = {item["code_id"]: item["duplicate_code_ids"] for item in compact}
+        for theme_data in result.get("themes", []):
+            code_ids = [
+                code_id for code_id in theme_data.get("code_ids", [])
+                if isinstance(code_id, int) and code_id in code_by_id
+            ]
+            if not code_ids:
+                code_ids = [
+                    code_id
+                    for description in theme_data.get("codes", [])
+                    for code_id in ids_by_description.get(description, [])
+                ]
+            code_ids = list(dict.fromkeys(
+                expanded for code_id in code_ids for expanded in (code_id, *duplicates.get(code_id, []))
+            ))
+            counterexample_ids = [
+                code_id for code_id in theme_data.get("counterexample_code_ids", [])
+                if isinstance(code_id, int) and code_id in code_by_id
+            ]
+            kind = theme_data.get("kind") or "pattern"
+            questions = list(theme_data.get("open_questions") or [])
+            if not code_ids:
+                kind = "evidence_gap"
+                questions.append("该发现缺少可追溯的原始编码，需人工核对。")
+            themes.append(Theme(
+                name=theme_data["name"],
+                description=theme_data["description"],
+                codes=[code_by_id[code_id].description for code_id in code_ids],
+                kind=kind,
+                code_ids=code_ids,
+                counterexample_code_ids=list(dict.fromkeys(counterexample_ids)),
+                open_questions=questions,
+            ))
+
+        return themes
+
+    def _request_themes(self, prompt: str, stage: str) -> Dict[str, Any]:
         if self.before_model_call:
-            self.before_model_call("归纳主题")
+            self.before_model_call(stage)
         response = self.client.chat.completions.create(
             model=self.model,
             messages=[
                 {"role": "system", "content": THEME_GENERATION_SYSTEM_PROMPT},
-                {"role": "user", "content": prompt}
+                {"role": "user", "content": prompt},
             ],
             temperature=0.3,
-            response_format={"type": "json_object"}
+            response_format={"type": "json_object"},
         )
-
-        result = json.loads(response.choices[0].message.content)
-        themes = []
-
-        for theme_data in result.get("themes", []):
-            themes.append(Theme(
-                name=theme_data["name"],
-                description=theme_data["description"],
-                codes=theme_data["codes"]
-            ))
-
-        return themes
+        return json.loads(response.choices[0].message.content)
 
     def run(self, transcript: str, save_path: str = None) -> Dict[str, Any]:
         """
@@ -248,6 +358,7 @@ class GenerationAgent:
             "chunks": [chunk.model_dump() for chunk in chunks],
             "codes": [code.model_dump() for code in codes],
             "themes": [theme.model_dump() for theme in themes],
+            "analytic_storyline": self.analytic_storyline,
             "chunking": self.last_chunk_plan.to_dict() if self.last_chunk_plan else None,
         }
 

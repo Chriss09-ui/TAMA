@@ -15,6 +15,7 @@ from tama import TAMAFramework
 from agents.evaluation_agent import EvaluationAgent
 from agents.generation_agent import GenerationAgent
 from agents.refinement_agent import RefinementAgent
+from research_profile import ResearchProfile
 
 
 class MiMoConfigTests(unittest.TestCase):
@@ -56,15 +57,17 @@ class MiMoConfigTests(unittest.TestCase):
             base_url="https://api.xiaomimimo.com/v1", chunk_size=600,
             chunk_strategy="manual",
             max_workers=2,
+            study=ResearchProfile(),
         )
         evaluation.assert_called_once_with(
             api_key="mimo-test", model="mimo-v2.5-pro", expert_criteria=None,
             base_url="https://api.xiaomimimo.com/v1", max_workers=2,
             decision_provider=None, confidence_threshold=0.7,
+            study=ResearchProfile(),
         )
         refinement.assert_called_once_with(
             api_key="mimo-test", model="mimo-v2.5-pro",
-            base_url="https://api.xiaomimimo.com/v1"
+            base_url="https://api.xiaomimimo.com/v1", study=ResearchProfile(),
         )
 
     def test_each_agent_constructs_client_with_endpoint(self):

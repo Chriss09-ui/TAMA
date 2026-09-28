@@ -16,7 +16,7 @@ class FrameworkResultTests(unittest.TestCase):
     def test_accepted_run_keeps_final_evaluation_audit_data(self):
         generation_result = {
             "chunks": ["访谈文本"],
-            "codes": [{"description": "编码"}],
+            "codes": [{"code_id": 0, "description": "编码", "excerpt": "访谈文本"}],
             "themes": [{"name": "主题", "description": "描述", "codes": ["编码"]}],
             "chunking": {
                 "strategy": "balanced", "total_characters": 4,
@@ -42,15 +42,21 @@ class FrameworkResultTests(unittest.TestCase):
 
             result = framework.run_analysis(
                 "访谈文本", session_name="audit-test", save_intermediate=False,
+                case_id="Case-01",
             )
 
+            self.assertEqual(result["case_id"], "Case-01")
             self.assertEqual(result["final_evaluation"], evaluation_result)
+            self.assertEqual(result["codes"], generation_result["codes"])
+            self.assertEqual(result["final_themes"][0]["code_ids"], [0])
             self.assertEqual(result["configuration"]["chunk_strategy"], "balanced")
             self.assertEqual(result["generation"]["chunking"], generation_result["chunking"])
             refinement_cls.return_value.run.assert_not_called()
             saved_path = Path(output_dir) / "audit-test" / "00_final_results.json"
             with saved_path.open(encoding="utf-8") as saved_file:
-                self.assertEqual(json.load(saved_file)["final_evaluation"], evaluation_result)
+                saved = json.load(saved_file)
+                self.assertEqual(saved["final_evaluation"], evaluation_result)
+                self.assertEqual(saved["codes"], generation_result["codes"])
 
 
 if __name__ == "__main__":

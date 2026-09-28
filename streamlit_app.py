@@ -20,7 +20,7 @@ ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT / "src"))
 
 from tama import TAMAFramework
-from analysis_job import AnalysisJob
+from analysis_job import JOB_REGISTRY
 from chunking import ChunkStrategy, plan_chunks
 from decisions import DecisionQuestion
 from decisions.jev_client import JevDecisionClient
@@ -29,8 +29,30 @@ from prompts import (
     JEV_CONNECTION_TEST_INSTRUCTIONS,
     JEV_CONNECTION_TEST_STATE,
 )
+from model_config import api_model_name
 
 JEV_DECISION_MODE = "Jev（实验性）"
+
+THEME_KIND_LABELS = {
+    "pattern": "案例内模式",
+    "information_breakpoint": "信息断点",
+    "counterexample": "反例",
+    "evidence_gap": "证据缺口",
+    "candidate_mechanism": "候选机制",
+}
+STATEMENT_TYPE_LABELS = {
+    "material_fact": "材料或事件支持",
+    "participant_report": "受访者报告",
+    "participant_interpretation": "受访者判断",
+    "researcher_interpretation": "研究者解释",
+    "undetermined": "待判定",
+}
+VERIFICATION_LABELS = {
+    "supported_by_material": "有材料支持",
+    "reported_only": "仅有受访者陈述",
+    "conflicting": "存在冲突",
+    "unknown": "尚未核实",
+}
 
 CHUNK_STRATEGIES: dict[str, ChunkStrategy] = {
     "自动 · 精细": "fine",
@@ -85,14 +107,6 @@ def delete_saved_api_key(provider: str) -> None:
     st.session_state[notice_key] = ("success", "已删除系统凭据库中保存的 API Key。")
 
 
-def api_model_name(provider: str, displayed_model: str) -> str:
-    """Translate a branded DeepSeek version name to its API model ID."""
-    model = displayed_model.strip()
-    if provider == "DeepSeek" and model.casefold() == "deepseek-v4.1-flash":
-        return "deepseek-flash"
-    return model
-
-
 def check_api_connection(api_key: str, model: str, base_url: str | None, provider: str) -> None:
     """Send one short request using the same endpoint and model as analysis."""
     client = OpenAI(api_key=api_key, base_url=base_url, timeout=20.0, max_retries=0)
@@ -120,6 +134,21 @@ def check_jev_connection(api_key: str, base_url: str | None) -> None:
         raise ValueError("模型返回异常结果")
 
 
+def connection_input_error(
+    api_key: str, model: str, base_url: str | None, endpoint: str | None,
+    decision_mode: str, jev_api_key: str, env_name: str,
+) -> str | None:
+    if not api_key:
+        return f"请填写 API Key，或设置 {env_name} 环境变量。"
+    if not model.strip():
+        return "请填写模型名称。"
+    if base_url is not None and not endpoint:
+        return "请填写接口地址。"
+    if decision_mode == JEV_DECISION_MODE and not jev_api_key:
+        return "决策模式为 Jev 时，请填写 Jev API Key，或设置 JEV_API_KEY 环境变量。"
+    return None
+
+
 @st.fragment(run_every="1s")
 def render_active_job() -> None:
     job = st.session_state["analysis_job"]
@@ -134,6 +163,9 @@ def render_active_job() -> None:
     elif st.button("暂停分析", key="pause_analysis", use_container_width=True):
         job.pause()
         st.rerun()
+    if st.button("取消分析", key="cancel_analysis", use_container_width=True):
+        job.cancel()
+        st.rerun()
 
     snapshot = job.snapshot()
     if snapshot.paused:
@@ -142,7 +174,7 @@ def render_active_job() -> None:
         st.info(f"等待当前请求完成后暂停 · {snapshot.stage}")
     else:
         st.info(f"正在分析 · {snapshot.stage}")
-    st.caption("暂停会在下一次模型请求前生效；请保持页面和服务运行。")
+    st.caption("暂停或取消会在下一次模型请求前生效；刷新页面可接回任务，请保持本地服务运行。")
 
 
 def extract_docx_body_xml(contents: bytes) -> str:
@@ -231,16 +263,19 @@ def read_transcript(source: str, pasted_text: str, uploaded_file) -> str:
 def build_result_docx(result: dict) -> bytes:
     """Create a readable Word report containing the final themes and codes."""
     document = Document()
-    document.add_heading("访谈主题分析报告", 0)
+    document.add_heading("访谈质性分析报告", 0)
     document.add_paragraph(f"分析编号：{result['session_name']}")
     if result.get("timestamp"):
         document.add_paragraph(f"分析时间：{result['timestamp']}")
+    if result.get("case_id"):
+        document.add_paragraph(f"匿名案例编号：{result['case_id']}")
     model = result.get("configuration", {}).get("model")
     if model:
         document.add_paragraph(f"模型：{model}")
     document.add_paragraph(f"状态：{'达到评估标准' if result['accepted'] else '已达到最大评估轮次'}")
     document.add_paragraph(f"平均分：{result['metadata']['final_average_score']:.2f} / 5")
     document.add_paragraph(f"评估轮次：{result['refinement_iterations']}")
+    document.add_paragraph("评估分数衡量分析结果的呈现质量；候选机制仍需研究者结合案例证据核查。")
 
     final_evaluation = result.get("final_evaluation") or {}
     global_feedback = final_evaluation.get("global_feedback")
@@ -254,17 +289,46 @@ def build_result_docx(result: dict) -> bytes:
         )
 
     themes = result["final_themes"]
+    code_by_id = {code.get("code_id"): code for code in result.get("codes", [])}
     document.add_heading(f"最终主题（{len(themes)}）", level=1)
     if not themes:
         document.add_paragraph("本次分析没有生成主题。")
     for index, theme in enumerate(themes, 1):
         document.add_heading(f"{index}. {theme['name']}", level=2)
+        document.add_paragraph(f"类型：{THEME_KIND_LABELS.get(theme.get('kind'), '待分类')}")
         document.add_paragraph(theme["description"])
-        codes = theme.get("codes", [])
-        if codes:
-            document.add_paragraph(f"关联编码（{len(codes)}）")
-            for code in codes:
+        code_ids = theme.get("code_ids") or []
+        if code_ids and code_by_id:
+            document.add_paragraph(f"关联编码（{len(code_ids)}）")
+            for code_id in code_ids:
+                code = code_by_id.get(code_id)
+                if not code:
+                    continue
+                document.add_paragraph(f"[{code_id}] {code['description']}", style="List Bullet")
+                if code.get("excerpt"):
+                    document.add_paragraph(f"原话：{code['excerpt']}")
+                document.add_paragraph(
+                    f"陈述类型：{STATEMENT_TYPE_LABELS.get(code.get('statement_type'), '待判定')}；"
+                    f"核验状态：{VERIFICATION_LABELS.get(code.get('verification_status'), '尚未核实')}"
+                )
+                if code.get("open_question"):
+                    document.add_paragraph(f"待核查：{code['open_question']}")
+        else:
+            for code in theme.get("codes", []):
                 document.add_paragraph(str(code), style="List Bullet")
+        if theme.get("counterexample_code_ids"):
+            document.add_paragraph(f"反例编码：{', '.join(map(str, theme['counterexample_code_ids']))}")
+        for question in theme.get("open_questions", []):
+            document.add_paragraph(f"待核查：{question}")
+
+    if result.get("codes"):
+        document.add_heading(f"完整编码台账（{len(result['codes'])}）", level=1)
+        for code in result["codes"]:
+            document.add_paragraph(f"[{code.get('code_id', '?')}] {code['description']}", style="List Bullet")
+            if code.get("excerpt"):
+                document.add_paragraph(f"原话：{code['excerpt']}")
+            if code.get("open_question"):
+                document.add_paragraph(f"待核查：{code['open_question']}")
 
     buffer = BytesIO()
     document.save(buffer)
@@ -276,15 +340,26 @@ def render_result(result: dict) -> None:
     st.header("3. 分析结果")
     st.caption("最近一次成功运行")
 
-    status = "达到评估标准" if result["accepted"] else "已达到最大评估轮次"
+    status = {
+        "accepted": "达到评估标准", "no_improvement": "连续评估未提升，已早停",
+        "max_iterations": "已达到最大评估轮次",
+    }.get(result.get("stop_reason"), "达到评估标准" if result["accepted"] else "分析已结束")
     score = result["metadata"]["final_average_score"]
     themes = result["final_themes"]
+    code_by_id = {code.get("code_id"): code for code in result.get("codes", [])}
 
     st.success(f"分析完成 · {status}")
     score_col, theme_col = st.columns(2)
     score_col.metric("平均分", f"{score:.2f} / 5")
     theme_col.metric("主题数", len(themes))
     st.caption(f"评估轮次：{result['refinement_iterations']}")
+    storyline = result.get("generation", {}).get("analytic_storyline")
+    if storyline:
+        st.write(f"初始主题故事线：{storyline}")
+    scores = result.get("score_history") or []
+    if scores:
+        st.caption("各轮平均分：" + " → ".join(f"{item['average_score']:.2f}" for item in scores))
+    st.caption("分数衡量分析结果的呈现质量；候选机制仍需研究者结合案例证据核查。")
 
     final_evaluation = result.get("final_evaluation") or {}
     if final_evaluation.get("global_feedback"):
@@ -310,7 +385,17 @@ def render_result(result: dict) -> None:
         mime="application/json",
         use_container_width=True,
     )
-    st.caption(f"已自动保存到本机：{ROOT / 'outputs' / result['session_name']}")
+    if st.button("清除服务内结果", key="clear_analysis_result", use_container_width=True):
+        JOB_REGISTRY.clear_completed()
+        st.session_state.pop("analysis_result", None)
+        st.session_state.pop("analysis_job", None)
+        st.rerun()
+    if result.get("configuration", {}).get("save_final"):
+        st.caption(f"已保存到本机：{ROOT / 'outputs' / result['session_name']}")
+    elif result.get("configuration", {}).get("save_intermediate"):
+        st.caption(f"阶段文件已保存到本机：{ROOT / 'outputs' / result['session_name']}；最终结果仅在服务进程内。")
+    else:
+        st.caption("结果仅保存在当前服务进程内；服务重启后无法恢复，可按需下载。")
 
     if not themes:
         st.info("本次分析没有生成主题。请检查输入文本和模型返回内容。")
@@ -319,12 +404,41 @@ def render_result(result: dict) -> None:
     for index, theme in enumerate(themes, 1):
         with st.container(border=True):
             st.subheader(f"{index:02d} · {theme['name']}")
+            st.caption(THEME_KIND_LABELS.get(theme.get("kind"), "待分类"))
             st.write(theme["description"])
-            codes = theme.get("codes", [])
-            if codes:
-                with st.expander(f"查看关联编码 · {len(codes)} 条"):
-                    for code in codes:
+            code_ids = theme.get("code_ids") or []
+            if code_ids and code_by_id:
+                with st.expander(f"查看证据与编码 · {len(code_ids)} 条"):
+                    for code_id in code_ids:
+                        code = code_by_id.get(code_id)
+                        if not code:
+                            continue
+                        st.markdown(f"**[{code_id}] {code['description']}**")
+                        if code.get("excerpt"):
+                            st.write(f"原话：{code['excerpt']}")
+                        st.caption(
+                            f"{STATEMENT_TYPE_LABELS.get(code.get('statement_type'), '待判定')} · "
+                            f"{VERIFICATION_LABELS.get(code.get('verification_status'), '尚未核实')}"
+                        )
+                        if code.get("open_question"):
+                            st.write(f"待核查：{code['open_question']}")
+            elif theme.get("codes"):
+                with st.expander(f"查看关联编码 · {len(theme['codes'])} 条"):
+                    for code in theme["codes"]:
                         st.write(f"• {code}")
+            if theme.get("counterexample_code_ids"):
+                st.caption(f"反例编码：{', '.join(map(str, theme['counterexample_code_ids']))}")
+            for question in theme.get("open_questions", []):
+                st.write(f"待核查：{question}")
+
+    if result.get("codes"):
+        with st.expander(f"完整编码台账 · {len(result['codes'])} 条"):
+            for code in result["codes"]:
+                st.markdown(f"**[{code.get('code_id', '?')}] {code['description']}**")
+                if code.get("excerpt"):
+                    st.write(f"原话：{code['excerpt']}")
+                if code.get("open_question"):
+                    st.write(f"待核查：{code['open_question']}")
 
 
 def render_methodology_references() -> None:
@@ -354,7 +468,7 @@ def render_methodology_references() -> None:
 
 
 def main() -> None:
-    st.set_page_config(page_title="TAMA · 主题分析", page_icon="📝", layout="wide")
+    st.set_page_config(page_title="TAMA · 访谈质性分析", page_icon="📝", layout="wide")
     st.markdown(
         """
         <style>
@@ -366,7 +480,9 @@ def main() -> None:
         """,
         unsafe_allow_html=True,
     )
-    job = st.session_state.get("analysis_job")
+    job = st.session_state.get("analysis_job") or JOB_REGISTRY.current()
+    if job is not None:
+        st.session_state["analysis_job"] = job
     running = job is not None and not job.snapshot().done
 
     with st.sidebar:
@@ -447,7 +563,7 @@ def main() -> None:
         decision_mode = st.selectbox(
             "决策模式", ["跟随主模型", JEV_DECISION_MODE], key="decision_mode",
             disabled=running,
-            help="跟随主模型：主模型以 JSON 模式给出评分与置信度；Jev：使用 TypeSafe Jev 决策接口。",
+            help="跟随主模型：主模型以 JSON 模式评估；Jev：用 TypeSafe Jev 评估主题。编码、主题和文字反馈仍由主模型生成。",
         )
         jev_api_key = ""
         if decision_mode == JEV_DECISION_MODE:
@@ -492,14 +608,11 @@ def main() -> None:
             "测试 API 连接", key="test_api_connection", disabled=running,
             use_container_width=True,
         ):
-            if not api_key:
-                st.error(f"请填写 API Key，或设置 {env_name} 环境变量。")
-            elif not model.strip():
-                st.error("请填写模型名称。")
-            elif base_url is not None and not endpoint:
-                st.error("请填写接口地址。")
-            elif decision_mode == JEV_DECISION_MODE and not jev_api_key:
-                st.error("决策模式为 Jev 时，请填写 Jev API Key，或设置 JEV_API_KEY 环境变量。")
+            error = connection_input_error(
+                api_key, model, base_url, endpoint, decision_mode, jev_api_key, env_name,
+            )
+            if error:
+                st.error(error)
             else:
                 try:
                     with st.spinner("正在测试模型接口……"):
@@ -520,6 +633,19 @@ def main() -> None:
 
         st.divider()
         st.subheader("切块与评估")
+        profile_label = st.selectbox(
+            "研究配置", ["通用主题分析", "企业能力与证据链"],
+            key="research_profile", disabled=running,
+        )
+        profile = "enterprise_evidence" if profile_label == "企业能力与证据链" else "generic"
+        research_question = st.text_input(
+            "研究问题（选填）", key="research_question", disabled=running,
+            help="通用配置留空即可；企业配置留空时使用内置研究问题。",
+        )
+        focus_text = st.text_input(
+            "关注点（选填，逗号分隔）", key="focus_areas", disabled=running,
+            help="通用配置留空即可；企业配置留空时使用内置关注点。",
+        )
         chunk_strategy_label = st.selectbox(
             "切块策略",
             list(CHUNK_STRATEGIES),
@@ -558,6 +684,15 @@ def main() -> None:
             disabled=running,
             help="包含文本片段、编码及逐轮评估，保存在本机 outputs 目录。",
         )
+        save_final = st.checkbox(
+            "保存本地结果", value=False, key="save_final", disabled=running,
+            help="关闭时只在当前服务进程中保留结果；可手动下载 Word 或 JSON。",
+        )
+        redact_saved_quotes = st.checkbox(
+            "本地结果移除逐字引文", value=False, key="redact_saved_quotes",
+            disabled=running or not save_final or save_intermediate,
+            help="移除 JSON 的 excerpt 字段；如需确保本地完全不保存访谈原话，请关闭所有本地保存。",
+        ) if save_final and not save_intermediate else False
         with st.expander("高级设置"):
             confidence_threshold = st.number_input(
                 "置信度阈值", min_value=0.05, max_value=1.0, value=0.7, step=0.05,
@@ -566,11 +701,15 @@ def main() -> None:
             )
 
     st.caption("TAMA · 质性研究工作台")
-    st.title("访谈主题分析")
-    st.write("输入访谈逐字稿，依次完成切块、提取编码、归纳主题和评估修订。")
+    st.title("访谈质性分析")
+    st.write("提取有原文依据的编码，识别共享意义模式、反例和待核查问题；可按研究问题聚焦。")
 
     st.divider()
     st.header("1. 输入访谈材料")
+    case_id = st.text_input(
+        "匿名案例编号（选填）", key="case_id", max_chars=80, disabled=running,
+        help="例如 Case-01。编号会进入报告，不会作为文件夹名称。",
+    )
     source = st.radio(
         "输入方式", ["粘贴文本", "上传文件"], horizontal=True,
         disabled=running,
@@ -583,7 +722,7 @@ def main() -> None:
         pasted_text = st.text_area(
             "逐字稿内容",
             height=320,
-            placeholder="访谈者：最近工作方式有什么变化？\n受访者：我开始远程办公，通勤时间少了……",
+            placeholder="访谈者：请描述一次相关经历。\n受访者：当时我……",
             key="transcript_text",
             disabled=running,
         )
@@ -618,20 +757,17 @@ def main() -> None:
             )
 
     st.header("2. 运行分析")
-    st.caption("开始后，访谈文本会发送到所选模型服务。可在左侧测试接口并调整分析参数。")
+    st.caption("请先对访谈材料去标识化。开始后，文本会发送到所选模型服务；模型生成的判断需要研究者核对。")
     if st.button("开始分析", type="primary", use_container_width=True, key="run_analysis", disabled=running):
+        connection_error = connection_input_error(
+            api_key, model, base_url, endpoint, decision_mode, jev_api_key, env_name,
+        )
         if input_error:
-            pass
+            st.error(input_error)
         elif not transcript:
             st.error("请先粘贴访谈文本或上传 TXT/DOCX 文件。")
-        elif not api_key:
-            st.error(f"请填写 API Key，或设置 {env_name} 环境变量。")
-        elif not model.strip():
-            st.error("请填写模型名称。")
-        elif base_url is not None and not endpoint:
-            st.error("请填写接口地址。")
-        elif decision_mode == JEV_DECISION_MODE and not jev_api_key:
-            st.error("决策模式为 Jev 时，请填写 Jev API Key，或设置 JEV_API_KEY 环境变量。")
+        elif connection_error:
+            st.error(connection_error)
         else:
             decision_provider = None
             if decision_mode == JEV_DECISION_MODE:
@@ -653,23 +789,34 @@ def main() -> None:
                     decision_provider=decision_provider,
                     confidence_threshold=float(confidence_threshold),
                     output_dir=str(ROOT / "outputs"),
+                    profile=profile,
+                    research_question=research_question,
+                    focus_areas=[item.strip() for item in focus_text.replace("，", ",").split(",") if item.strip()] or None,
                 )
                 return framework.run_analysis(
                     transcript=transcript,
                     save_intermediate=save_intermediate,
+                    save_final=save_final,
+                    redact_saved_quotes=redact_saved_quotes,
                     before_model_call=checkpoint,
+                    **({"case_id": case_id} if case_id.strip() else {}),
                 )
 
             st.session_state.pop("analysis_result", None)
-            job = AnalysisJob(run)
-            st.session_state["analysis_job"] = job
-            job.start()
-            st.rerun()
+            try:
+                job = JOB_REGISTRY.start(run)
+            except RuntimeError:
+                st.error("已有分析正在运行，请接回或取消该任务。")
+            else:
+                st.session_state["analysis_job"] = job
+                st.rerun()
 
     if job is not None and job.snapshot().done:
         snapshot = job.snapshot()
         if snapshot.result is not None:
             st.session_state["analysis_result"] = snapshot.result
+        elif snapshot.cancelled:
+            st.info("分析已取消；已发出的模型请求可能已计费。")
         else:
             st.error("分析未完成。请检查密钥、接口地址、网络和模型返回内容。")
             st.caption(f"错误类型：{snapshot.error_type}")

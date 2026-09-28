@@ -86,7 +86,7 @@ class GenericPromptTests(unittest.TestCase):
             agent.evaluate_theme(theme, [theme], [{"description": "通勤安排的变化"}])
         self.assertEqual(stages, ["评估主题 · 日常安排", "生成评估反馈 · 日常安排"])
         self.assert_generic_prompt(agent.client)
-        self.assertIn("提供的编码", agent.criteria.relevance)
+        self.assertIn("追溯到原文", agent.criteria.relevance)
         feedback_prompt = agent.client.chat.completions.create.call_args.kwargs["messages"][1]["content"]
         self.assertIn('"coverage_feedback"', feedback_prompt)
         self.assertIn('"needs_refinement"', feedback_prompt)
@@ -124,6 +124,67 @@ class GenericPromptTests(unittest.TestCase):
         self.assertIn("需要修订", feedback)
         self.assertIn("覆盖度", feedback)
         self.assertNotIn("NEEDS REFINEMENT", feedback)
+
+    def test_code_quote_is_located_and_invalid_quote_requires_review(self):
+        agent = GenerationAgent(api_key="test")
+        agent.client = Mock()
+        chunk = Chunk(
+            chunk_id=2, text="受访者：合同在法务部门。", start_word=0, end_word=1,
+            start_char=40, end_char=53,
+        )
+        agent.client.chat.completions.create.return_value = fake_response({"codes": [
+            {
+                "description": "合同由法务掌握", "excerpt": "合同在法务部门",
+                "focus": ["evidence_holder"], "statement_type": "participant_report",
+                "verification_status": "reported_only", "open_question": "",
+            },
+            {
+                "description": "公开资料待核查", "excerpt": "官网已有合同",
+                "focus": ["public_status"], "statement_type": "participant_report",
+                "verification_status": "supported_by_material", "open_question": "",
+            },
+        ]})
+
+        codes = agent.generate_codes_from_chunk(chunk)
+        self.assertEqual(codes[0].source_start, 44)
+        self.assertEqual(codes[0].source_end, 51)
+        self.assertEqual(codes[0].excerpt, chunk.text[4:11])
+        self.assertEqual(codes[0].verification_status, "reported_only")
+        self.assertIsNone(codes[1].excerpt)
+        self.assertIsNone(codes[1].source_start)
+        self.assertEqual(codes[1].verification_status, "unknown")
+        self.assertIn("人工核对", codes[1].open_question)
+
+        agent.client.chat.completions.create.return_value = fake_response({
+            "codes": [{"description": "缺少来源的编码"}],
+        })
+        missing_quote = agent.generate_codes_from_chunk(chunk)[0]
+        self.assertIn("缺少逐字原文", missing_quote.open_question)
+
+    def test_theme_keeps_code_references_and_rejects_unsourced_mechanism(self):
+        agent = GenerationAgent(api_key="test")
+        agent.client = Mock()
+        agent.client.chat.completions.create.return_value = fake_response({"themes": [
+            {
+                "name": "部门间断点", "description": "证据未流入市场部门。",
+                "kind": "information_breakpoint", "code_ids": [3, 999],
+                "counterexample_code_ids": [], "open_questions": [],
+                "codes": ["法务掌握合同"],
+            },
+            {
+                "name": "无来源解释", "description": "待核查。",
+                "kind": "candidate_mechanism", "code_ids": [999],
+                "counterexample_code_ids": [], "open_questions": [], "codes": [],
+            },
+        ]})
+        themes = agent.generate_themes([
+            Code(code_id=3, description="法务掌握合同", source_chunks=[0]),
+        ])
+
+        self.assertEqual(themes[0].code_ids, [3])
+        self.assertEqual(themes[0].codes, ["法务掌握合同"])
+        self.assertEqual(themes[1].kind, "evidence_gap")
+        self.assertIn("缺少可追溯", themes[1].open_questions[0])
 
 
 if __name__ == "__main__":

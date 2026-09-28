@@ -95,7 +95,7 @@ class HybridEvaluationTests(unittest.TestCase):
 
         state, questions = provider.calls[0]
         self.assertEqual(state["theme"]["codes"], ["通勤安排的变化"])
-        self.assertEqual(state["original_codes"], ["通勤安排的变化"])
+        self.assertEqual(state["original_codes"], CODES)
         self.assertEqual(set(questions), {
             "coverage", "actionability", "distinctiveness", "relevance", "needs_refinement",
         })
@@ -166,6 +166,34 @@ class HybridEvaluationTests(unittest.TestCase):
             result.weighted_scores,
             {"coverage": 4.5, "actionability": 3.5, "distinctiveness": 1.2, "relevance": 5.0},
         )
+        self.assertTrue(result.needs_refinement)
+
+    def test_average_cannot_hide_a_weak_criterion(self):
+        agent, _ = self.make_agent(StubDecisionProvider(decision_answers()))
+
+        def evaluation(name, coverage):
+            return EvaluationResult(
+                theme_name=name,
+                coverage_score=round(coverage), coverage_feedback="反馈",
+                actionability_score=5, actionability_feedback="反馈",
+                distinctiveness_score=5, distinctiveness_feedback="反馈",
+                relevance_score=5, relevance_feedback="反馈",
+                overall_score=(coverage + 15) / 4,
+                needs_refinement=False, refinement_suggestions=[],
+                weighted_scores={
+                    "coverage": coverage, "actionability": 5.0,
+                    "distinctiveness": 5.0, "relevance": 5.0,
+                },
+            )
+
+        agent.evaluate_theme = Mock(side_effect=[evaluation("主题甲", 5.0), evaluation("主题乙", 3.5)])
+        themes = [{"name": "主题甲"}, {"name": "主题乙"}]
+        agent.max_workers = 1
+        result = agent.evaluate_all_themes(themes, [], acceptance_threshold=4.0)
+
+        self.assertGreater(result.average_score, 4.0)
+        self.assertFalse(result.is_acceptable)
+        self.assertIn("尚未满足逐项验收标准", result.global_feedback)
 
     def test_continuous_score_below_threshold_triggers_feedback(self):
         provider = StubDecisionProvider(decision_answers(coverage=2.6))
@@ -187,7 +215,7 @@ class HybridEvaluationTests(unittest.TestCase):
         self.assertEqual(stages[-1], "生成评估反馈 · 日常安排")
 
     def test_needs_refinement_probability_gates_detail_call(self):
-        # 0.6 -> needs refinement -> detail call runs and its verdict wins.
+        # A prose feedback call cannot cancel a positive typed decision.
         provider = StubDecisionProvider(decision_answers(needs_probability=0.6))
         agent, stages = self.make_agent(provider)
         agent.client.chat.completions.create.return_value = fake_response({
@@ -199,7 +227,7 @@ class HybridEvaluationTests(unittest.TestCase):
         result = agent.evaluate_theme(THEME, [THEME], CODES)
 
         self.assertEqual(stages[-1], "生成评估反馈 · 日常安排")
-        self.assertFalse(result.needs_refinement)  # detail verdict wins
+        self.assertTrue(result.needs_refinement)
 
         # 0.4 -> confident no refinement; strong scores -> placeholder only.
         provider = StubDecisionProvider(decision_answers(needs_probability=0.4))

@@ -20,10 +20,12 @@ sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT))
 
 from streamlit_app import KEYRING_SERVICE, api_model_name, build_result_docx, check_api_connection, read_transcript
+from analysis_job import JOB_REGISTRY
 
 
 class StreamlitAppTests(unittest.TestCase):
     def setUp(self):
+        JOB_REGISTRY.clear_completed()
         keyring_patch = patch("keyring.get_password", return_value=None)
         self.keyring_get = keyring_patch.start()
         self.addCleanup(keyring_patch.stop)
@@ -125,8 +127,30 @@ class StreamlitAppTests(unittest.TestCase):
 
         document = Document(BytesIO(build_result_docx(result)))
         paragraphs = "\n".join(paragraph.text for paragraph in document.paragraphs)
-        for expected in ("访谈主题分析报告", "工作方式变化", "受访者描述了远程办公。",
+        for expected in ("访谈质性分析报告", "工作方式变化", "受访者描述了远程办公。",
                          "通勤时间减少", "线上沟通增加", "建议人工复核"):
+            self.assertIn(expected, paragraphs)
+
+    def test_saved_word_report_includes_quote_and_evidence_gap(self):
+        result = {
+            "session_name": "case-01", "accepted": True,
+            "metadata": {"final_average_score": 4.0}, "refinement_iterations": 1,
+            "codes": [{
+                "code_id": 2, "description": "合同由法务掌握",
+                "excerpt": "合同在法务部门", "statement_type": "participant_report",
+                "verification_status": "reported_only", "open_question": "需向法务核查",
+            }],
+            "final_themes": [{
+                "name": "证据掌握关系", "description": "合同由法务保管。",
+                "kind": "evidence_gap", "code_ids": [2],
+                "counterexample_code_ids": [], "open_questions": ["公开状态待查"],
+                "codes": ["合同由法务掌握"],
+            }],
+        }
+
+        document = Document(BytesIO(build_result_docx(result)))
+        paragraphs = "\n".join(paragraph.text for paragraph in document.paragraphs)
+        for expected in ("证据缺口", "合同在法务部门", "仅有受访者陈述", "需向法务核查", "公开状态待查"):
             self.assertIn(expected, paragraphs)
 
     def test_result_page_offers_word_and_json_saves(self):
@@ -151,6 +175,8 @@ class StreamlitAppTests(unittest.TestCase):
         self.assertEqual(download.call_args_list[0].kwargs["file_name"], "report-test.docx")
         self.assertEqual(json.loads(download.call_args_list[1].kwargs["data"]), result)
         self.assertIn("主题甲", app.warning[0].value)
+        app.button(key="clear_analysis_result").click().run()
+        self.assertNotIn("analysis_result", app.session_state)
 
     def test_empty_transcript_shows_validation_error(self):
         with patch.dict(os.environ, {}, clear=True):
@@ -195,6 +221,7 @@ class StreamlitAppTests(unittest.TestCase):
             app = AppTest.from_file(str(APP_PATH)).run()
             app.selectbox(key="provider").set_value("MiMo").run()
             app.text_area(key="transcript_text").set_value("一段测试访谈文本").run()
+            app.text_input(key="case_id").set_value("Case-01").run()
             app.text_input(key="api_key_MiMo").set_value("test-key").run()
             self.assertEqual(app.selectbox(key="chunk_strategy").value, "自动 · 均衡")
             app.selectbox(key="chunk_strategy").set_value("手动设置").run()
@@ -219,12 +246,41 @@ class StreamlitAppTests(unittest.TestCase):
             decision_provider=None,
             confidence_threshold=0.7,
             output_dir=str(ROOT / "outputs"),
+            profile="generic", research_question="", focus_areas=None,
         )
         framework.return_value.run_analysis.assert_called_once_with(
             transcript="一段测试访谈文本",
             save_intermediate=False,
+            save_final=False,
+            redact_saved_quotes=False,
             before_model_call=ANY,
+            case_id="Case-01",
         )
+
+    def test_focus_and_redacted_local_save_reach_framework(self):
+        result = {
+            "session_name": "privacy", "accepted": True,
+            "metadata": {"final_average_score": 4.0},
+            "refinement_iterations": 1, "final_themes": [],
+        }
+        with patch.dict(os.environ, {}, clear=True), patch("tama.TAMAFramework") as framework:
+            framework.return_value.run_analysis.return_value = result
+            app = AppTest.from_file(str(APP_PATH)).run()
+            app.selectbox(key="research_profile").set_value("企业能力与证据链").run()
+            app.text_input(key="research_question").set_value("信息如何公开？").run()
+            app.text_input(key="focus_areas").set_value("证据, 断点").run()
+            app.checkbox(key="save_final").set_value(True).run()
+            app.checkbox(key="redact_saved_quotes").set_value(True).run()
+            app.text_area(key="transcript_text").set_value("测试访谈").run()
+            app.text_input(key="api_key_DeepSeek").set_value("test-key").run()
+            app.button(key="run_analysis").click().run()
+            self.assertTrue(app.session_state["analysis_job"].done.wait(2))
+
+        self.assertEqual(framework.call_args.kwargs["profile"], "enterprise_evidence")
+        self.assertEqual(framework.call_args.kwargs["research_question"], "信息如何公开？")
+        self.assertEqual(framework.call_args.kwargs["focus_areas"], ["证据", "断点"])
+        self.assertTrue(framework.return_value.run_analysis.call_args.kwargs["save_final"])
+        self.assertTrue(framework.return_value.run_analysis.call_args.kwargs["redact_saved_quotes"])
 
     def test_deepseek_provider_passes_model_and_endpoint(self):
         result = {
@@ -257,10 +313,13 @@ class StreamlitAppTests(unittest.TestCase):
             decision_provider=None,
             confidence_threshold=0.7,
             output_dir=str(ROOT / "outputs"),
+            profile="generic", research_question="", focus_areas=None,
         )
         framework.return_value.run_analysis.assert_called_once_with(
             transcript="一段测试访谈文本",
             save_intermediate=False,
+            save_final=False,
+            redact_saved_quotes=False,
             before_model_call=ANY,
         )
 
@@ -351,6 +410,41 @@ class StreamlitAppTests(unittest.TestCase):
         self.assertTrue(second_started.is_set())
         self.assertEqual(app.session_state["analysis_result"], result)
 
+    def test_new_browser_session_reconnects_to_running_job_and_result(self):
+        entered = Event()
+        release = Event()
+        result = {
+            "session_name": "reconnected", "accepted": True,
+            "metadata": {"final_average_score": 4.0},
+            "refinement_iterations": 1, "final_themes": [],
+        }
+
+        def run_analysis(*, before_model_call, **kwargs):
+            before_model_call("提取编码")
+            entered.set()
+            if not release.wait(5):
+                raise TimeoutError("model call timed out")
+            return result
+
+        with patch.dict(os.environ, {}, clear=True), patch("tama.TAMAFramework") as framework:
+            framework.return_value.run_analysis.side_effect = run_analysis
+            app = AppTest.from_file(str(APP_PATH)).run()
+            app.text_area(key="transcript_text").set_value("测试文本").run()
+            app.text_input(key="api_key_DeepSeek").set_value("test-key").run()
+            try:
+                app.button(key="run_analysis").click().run()
+                self.assertTrue(entered.wait(2))
+                refreshed = AppTest.from_file(str(APP_PATH)).run()
+                self.assertIs(refreshed.session_state["analysis_job"], app.session_state["analysis_job"])
+                self.assertTrue(refreshed.button(key="run_analysis").disabled)
+                release.set()
+                self.assertTrue(app.session_state["analysis_job"].done.wait(2))
+                refreshed.run()
+                self.assertEqual(refreshed.session_state["analysis_result"], result)
+            finally:
+                release.set()
+
+
     def test_connection_button_uses_selected_provider_without_network(self):
         with patch.dict(os.environ, {}, clear=True), patch("openai.OpenAI") as client:
             client.return_value.chat.completions.create.return_value.choices = [object()]
@@ -399,6 +493,7 @@ class StreamlitAppTests(unittest.TestCase):
             max_workers=4, max_iterations=5,
             decision_provider=None, confidence_threshold=0.7,
             output_dir=str(ROOT / "outputs"),
+            profile="generic", research_question="", focus_areas=None,
         )
 
     def test_delete_saved_key_removes_it_from_next_session(self):
@@ -500,6 +595,7 @@ class StreamlitAppTests(unittest.TestCase):
             decision_provider=jev_client_cls.return_value,
             confidence_threshold=0.7,
             output_dir=str(ROOT / "outputs"),
+            profile="generic", research_question="", focus_areas=None,
         )
 
     def test_jev_connection_test_sends_noul_request(self):

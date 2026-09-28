@@ -7,12 +7,17 @@ from traceback import extract_tb
 from typing import Any, Callable, Dict, Optional
 
 
+class AnalysisCancelled(Exception):
+    """Raised at a model-request boundary after cooperative cancellation."""
+
+
 @dataclass(frozen=True)
 class JobSnapshot:
     stage: str
     pause_requested: bool
     paused: bool
     done: bool
+    cancelled: bool
     result: Optional[Dict[str, Any]]
     error_type: Optional[str]
     error_location: Optional[str]
@@ -26,6 +31,7 @@ class AnalysisJob:
         self._resume = Event()
         self._resume.set()
         self.done = Event()
+        self._cancel = Event()
         self._stage = "准备运行"
         self._paused = False
         self._result = None
@@ -47,11 +53,18 @@ class AnalysisJob:
             self._resume.set()
             self._paused = False
 
+    def cancel(self) -> None:
+        """Stop before the next request; a request already sent may finish."""
+        self._cancel.set()
+        self._resume.set()
+
     def checkpoint(self, stage: str) -> None:
         with self._lock:
             self._stage = stage
             self._paused = not self._resume.is_set()
         self._resume.wait()
+        if self._cancel.is_set():
+            raise AnalysisCancelled()
         with self._lock:
             self._paused = False
 
@@ -62,6 +75,7 @@ class AnalysisJob:
                 pause_requested=not self._resume.is_set(),
                 paused=self._paused,
                 done=self.done.is_set(),
+                cancelled=self._cancel.is_set(),
                 result=self._result,
                 error_type=self._error_type,
                 error_location=self._error_location,
@@ -71,6 +85,9 @@ class AnalysisJob:
     def _run(self) -> None:
         try:
             result = self._runner(self.checkpoint)
+        except AnalysisCancelled:
+            with self._lock:
+                self._stage = "已取消"
         except Exception as exc:
             frames = extract_tb(exc.__traceback__)
             status = getattr(exc, "status_code", None)
@@ -87,3 +104,34 @@ class AnalysisJob:
             with self._lock:
                 self._runner = None
                 self.done.set()
+
+
+class JobRegistry:
+    """Process-wide latest job, so a browser refresh can reconnect to it."""
+
+    def __init__(self):
+        self._lock = Lock()
+        self._job: Optional[AnalysisJob] = None
+
+    def current(self) -> Optional[AnalysisJob]:
+        with self._lock:
+            return self._job
+
+    def start(self, runner: Callable[[Callable[[str], None]], Dict[str, Any]]) -> AnalysisJob:
+        with self._lock:
+            if self._job is not None and not self._job.done.is_set():
+                raise RuntimeError("已有分析正在运行")
+            job = AnalysisJob(runner)
+            self._job = job
+            job.start()
+            return job
+
+    def clear_completed(self) -> None:
+        """Forget a completed job and its in-memory transcript-derived result."""
+        with self._lock:
+            if self._job is not None and not self._job.done.is_set():
+                raise RuntimeError("不能清除正在运行的分析")
+            self._job = None
+
+
+JOB_REGISTRY = JobRegistry()

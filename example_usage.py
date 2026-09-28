@@ -11,6 +11,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'src'))
 
 from tama import TAMAFramework, load_transcript
 from decisions.jev_client import JevDecisionClient
+from model_config import api_model_name
 
 
 def get_decision_provider():
@@ -39,7 +40,7 @@ def get_model_config():
     if deepseek_api_key:
         return (
             deepseek_api_key,
-            os.getenv("DEEPSEEK_MODEL", "deepseek-flash"),
+            api_model_name("DeepSeek", os.getenv("DEEPSEEK_MODEL", "deepseek-flash")),
             os.getenv("DEEPSEEK_BASE_URL") or "https://api.deepseek.com"
         )
 
