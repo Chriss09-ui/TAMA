@@ -274,6 +274,10 @@ interview words may be retained. When enabled, files under
 `outputs/[session_name]/` are:
 
 - `00_final_results.json` and `00_summary.txt`: final result
+- `04_memos.md` and `04_memos.json`: why each theme holds those codes. Text between `[human]` markers is for the researcher and is not sent to the model
+- `04_memos_iter*.json`: the same memo at each generation or refinement pass
+- `05_codebook.md`: definition, inclusion, exclusion, and examples for each canonical code. Redacted saves omit excerpts
+- `next_data_plan.md`: open questions grouped for the next round of data collection
 - `01_generation.json`: chunks and codes, only with `save_intermediate=True`
 - `02_evaluation_iter*.json`, `03_refinement_iter*.json`: iterative audit files, only with `save_intermediate=True`
 
@@ -290,7 +294,7 @@ already exists receives a suffix instead of overwriting an earlier run.
 ### 2. Evaluation Agent
 Evaluates themes using four criteria:
 - **Coverage**: Comprehensively captures important patterns
-- **Actionability**: Expresses a shared meaning pattern rather than a topic or interview-guide section
+- **Pattern** (stored as `actionability`): a shared meaning across the material, rather than a topic, background section, or interview-guide heading. A background section scores 1 or 2; a pattern with supporting codes scores 4.
 - **Distinctiveness**: Clearly distinct from other themes
 - **Relevance**: Accurately reflects the data
 

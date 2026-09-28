@@ -39,13 +39,55 @@ ENTERPRISE_CRITERIA = {
     "relevance": "应追溯到原文和具体案例，区分受访者说法与可核验事实；候选机制不能写成已证实原因",
 }
 
-EVALUATION_SCALE = (
-    "1 分：较差",
-    "2 分：较弱",
-    "3 分：一般",
-    "4 分：良好",
-    "5 分：优秀",
+PATTERN_SCALE = (
+    "1 分：话题罗列或背景性章节，没有指出反复出现的意义",
+    "2 分：只复述材料中的原话，没有归纳",
+    "3 分：有描述，但停留在描述，没有分析出共享模式",
+    "4 分：模式清楚，并且有编码支撑",
+    "5 分：模式清楚，有编码支撑，同时保留了反例、未知和进一步诠释的空间",
 )
+COVERAGE_SCALE = (
+    "1 分：只碰到孤立细节，反复出现的内容和反例都没有位置",
+    "2 分：覆盖了一部分重复内容，反例或未知被丢掉",
+    "3 分：主要的重复内容都在，反例或未知只是被提到",
+    "4 分：反复出现的重要内容都有位置，反例和未知被保留",
+    "5 分：重要内容、反例和未知都在，而且能看出它们如何一起回答问题",
+)
+DISTINCTIVENESS_SCALE = (
+    "1 分：与另一个主题说的是同一件事",
+    "2 分：大部分重叠，只有措辞不同",
+    "3 分：有一部分重叠",
+    "4 分：界限清楚，只有边缘材料可能两边都相关",
+    "5 分：界限清楚，重叠处被写成边界或反例",
+)
+RELEVANCE_SCALE = (
+    "1 分：无法追溯到原文，或把解释写成了已经证实的原因",
+    "2 分：只是话题相关，摘录对不上判断",
+    "3 分：能追溯到原文，但受访者说法和研究者解释混在一起",
+    "4 分：能追溯到原文，并区分了受访者说法和可核验事实",
+    "5 分：追溯清楚，解释被标成解释，缺口被写明",
+)
+CRITERION_SCALES = {
+    "coverage": COVERAGE_SCALE,
+    "actionability": PATTERN_SCALE,
+    "distinctiveness": DISTINCTIVENESS_SCALE,
+    "relevance": RELEVANCE_SCALE,
+}
+CRITERION_LABELS = {
+    "coverage": "覆盖度",
+    "actionability": "模式性",
+    "distinctiveness": "区分度",
+    "relevance": "相关性",
+}
+EVALUATION_SCALE = PATTERN_SCALE
+
+
+def format_criterion_scales() -> str:
+    blocks = []
+    for key, label in CRITERION_LABELS.items():
+        levels = "\n".join(f"- {level}" for level in CRITERION_SCALES[key])
+        blocks.append(f"{label}：\n{levels}")
+    return "\n".join(blocks)
 
 API_CONNECTION_TEST_PROMPT = "请回复 OK。"
 JEV_CONNECTION_TEST_STATE = "连接测试"
@@ -61,7 +103,10 @@ def build_code_extraction_prompt(chunk_text: str, study: ResearchProfile = Resea
 
 要求：
 - 按意义单元识别经历、观点、情境、矛盾、反例和未知；只记录片段实际涉及的内容，不按访谈问题顺序填表
-- 每条编码只表达一个相对完整的事实陈述、经历、判断或解释，用简短词组或短句概括
+- 每条编码只表达一个相对完整的事实陈述、经历、判断或解释
+- "name" 用过程性短语概括这一做法或经历，例如「整理客户留言」「寻求关注」。如果直接采用受访者自己的原话或隐喻，"name" 写这段原话，并把 "in_vivo" 设为 true
+- "description" 与 "name" 写同一短语
+- "definition" 写这个编码指什么；"include" 写什么情况算；"exclude" 写什么情况不算
 - "excerpt" 必须是本片段中一段连续、逐字相同且足以支持编码的简短原文；不要用概括句冒充原话
 - "focus" 可填一个或多个与研究聚焦对应的标签；通用分析或无关内容填空数组
 - "statement_type" 区分 material_fact（材料或明确事件支持）、participant_report（受访者对事件或状态的报告）、participant_interpretation（受访者的原因判断）、researcher_interpretation（材料中已有的研究者解释）、undetermined
@@ -76,7 +121,12 @@ def build_code_extraction_prompt(chunk_text: str, study: ResearchProfile = Resea
 {{
   "codes": [
     {{
-      "description": "一条编码的简短描述",
+      "name": "整理客户留言",
+      "description": "整理客户留言",
+      "definition": "把客户原话搬进可查看的记录",
+      "include": "抄录、誊写、整理留言",
+      "exclude": "阅读、改写或决定这些记录",
+      "in_vivo": false,
       "excerpt": "片段中逐字相同的连续原文",
       "focus": [],
       "statement_type": "participant_report",
@@ -97,7 +147,8 @@ def build_theme_generation_prompt(codes: Iterable[Mapping[str, Any]], study: Res
 请依据以下带来源的编码归纳共享意义模式，并说明主题之间的分析故事线。
 
 要求：
-- 跨编码组织共享意义模式；访谈提纲章节、背景信息和单纯话题摘要不作为主题；保留矛盾、反例和未知
+- 跨编码组织共享意义模式；访谈提纲章节、背景介绍、专业身份和单纯话题摘要不作为主题；保留矛盾、反例和未知
+- 每个主题写 "rationale"：为什么这些编码是同一个做法或同一种意义，而不是同一个话题。写 "uncertain"：这里还不能确定什么；没有则填空字符串
 - 每项发现有清楚、具体的名称和简短描述；用 "code_ids" 引用支持它的原始编码编号
 - "kind" 可为 pattern、information_breakpoint、counterexample、evidence_gap 或 candidate_mechanism；这些标签仅在材料支持时使用
 - candidate_mechanism 只能是有具体编码支持的候选解释，同时列出反例编号和未解决问题；不要宣称因果关系已经证实
@@ -120,6 +171,8 @@ def build_theme_generation_prompt(codes: Iterable[Mapping[str, Any]], study: Res
       "code_ids": [0],
       "counterexample_code_ids": [],
       "open_questions": [],
+      "rationale": "为什么这些编码构成同一个模式",
+      "uncertain": "还不能确定什么；没有则为空字符串",
       "codes": ["属于该主题的原始编码描述"]
     }}
   ]
@@ -132,7 +185,29 @@ def build_theme_consolidation_prompt(themes: Sequence[Mapping[str, Any]], study:
 {study.prompt_section()}
 合并重叠主题，保留反例和未知；不要将访谈话题或背景章节当成主题。code_ids 必须沿用候选主题中的原始编号，不编造编号。
 候选主题：{json.dumps(themes, ensure_ascii=False, separators=(',', ':'))}
-只返回 JSON 对象：{{"analytic_storyline":"主题间的分析故事线","themes":[{{"name":"主题名称","description":"主题描述","kind":"pattern","code_ids":[0],"counterexample_code_ids":[],"open_questions":[],"codes":[]}}]}}"""
+只返回 JSON 对象：{{"analytic_storyline":"主题间的分析故事线","themes":[{{"name":"主题名称","description":"主题描述","kind":"pattern","code_ids":[0],"counterexample_code_ids":[],"open_questions":[],"rationale":"为什么这些编码构成同一个模式","uncertain":"","codes":[]}}]}}"""
+
+
+def build_code_merge_prompt(codes: Sequence[Mapping[str, Any]], study: ResearchProfile = ResearchProfile()) -> str:
+    codes_text = json.dumps(list(codes), ensure_ascii=False, indent=2)
+    return f"""你是一名质性研究者，正在整理编码簿。
+
+{study.prompt_section()}
+
+下面是同一份材料里抽出的编码。请把表达同一做法、同一经历或同一意义的编码合并。只合并含义相同的编码。话题相近但做法不同的，保持分开。
+
+合并后的 name 用过程性短语，例如「整理客户留言」「寻求关注」。如果用的是受访者自己的原话或隐喻，name 保留原话，并把 in_vivo 设为 true。
+definition 写这个编码指什么。include 写什么情况算。exclude 写什么情况不算，避免合并后定义变宽。
+example_code_id 必须是该组 code_ids 中的一个，用作正例。
+每个输入的 code_id 最多出现在一个组里。不要发明输入中没有的 code_id。不需要合并的编码单独成组。
+编码名称和定义使用与编码相同的语言。
+
+编码：
+{codes_text}
+
+只返回 JSON 对象，不添加解释或 Markdown：
+{{"groups":[{{"name":"整理客户留言","definition":"把客户原话搬进表格","include":"抄录、誊写、整理留言","exclude":"阅读或改写这些记录","in_vivo":false,"example_code_id":0,"code_ids":[0,1]}}]}}
+"""
 
 
 def build_evaluation_question_instructions(criteria: Any) -> Dict[str, str]:
@@ -141,7 +216,10 @@ def build_evaluation_question_instructions(criteria: Any) -> Dict[str, str]:
             f"评估主题的覆盖度：{criteria.coverage}。只依据材料评分，不编造依据。"
         ),
         "actionability": (
-            f"评估主题的概念清晰度：{criteria.actionability}。检查它是否只是访谈章节或话题摘要，而非共享意义模式。"
+            f"评估主题的模式性：{criteria.actionability}。"
+            "背景介绍、专业身份、访谈提纲里的章节，即使写得很清楚，模式性也不得高于 2 分。"
+            "1 分是话题罗列或背景章节；2 分是只复述原话；3 分是有描述无分析；"
+            "4 分是模式清楚且有编码支撑；5 分还保留反例、未知和诠释空间。"
         ),
         "distinctiveness": (
             f"评估主题的区分度：{criteria.distinctiveness}。结合其他主题判断重叠程度。"
@@ -153,10 +231,10 @@ def build_evaluation_question_instructions(criteria: Any) -> Dict[str, str]:
         "needs_refinement": (
             "判断该主题是否需要修订。请独立检查四项标准："
             f"覆盖度——{criteria.coverage}；"
-            f"概念清晰度——{criteria.actionability}；"
+            f"模式性——{criteria.actionability}；"
             f"区分度——{criteria.distinctiveness}；"
             f"相关性——{criteria.relevance}。"
-            "任一重要标准未达到良好水平、主题只是话题摘要，或候选机制缺少具体来源、忽略反例时回答‘是’。"
+            "任一重要标准未达到 4 分、主题只是话题摘要或背景章节，或候选机制缺少具体来源、忽略反例时回答‘是’。"
         ),
     }
 
@@ -180,7 +258,7 @@ def build_evaluation_feedback_prompt(
 
 主题「{theme['name']}」的评分结果：
 - 覆盖度：{scores['coverage']:.2f}/5
-- 概念清晰度：{scores['actionability']:.2f}/5
+- 模式性：{scores['actionability']:.2f}/5
 - 区分度：{scores['distinctiveness']:.2f}/5
 - 相关性：{scores['relevance']:.2f}/5
 
@@ -207,7 +285,7 @@ def build_evaluation_feedback_prompt(
 只返回符合以下结构的 JSON 对象，不添加解释或 Markdown；保留英文键名：
 {{
   "coverage_feedback": "覆盖度的具体反馈",
-  "actionability_feedback": "概念清晰度的具体反馈",
+  "actionability_feedback": "模式性的具体反馈",
   "distinctiveness_feedback": "区分度的具体反馈",
   "relevance_feedback": "相关性的具体反馈",
   "needs_refinement": false,
@@ -236,7 +314,7 @@ def build_full_evaluation_prompt(
 请依据以下四项标准评估主题：
 
 1. 覆盖度：{criteria.coverage}
-2. 概念清晰度：{criteria.actionability}
+2. 模式性：{criteria.actionability}
 3. 区分度：{criteria.distinctiveness}
 4. 相关性：{criteria.relevance}
 
@@ -253,12 +331,14 @@ def build_full_evaluation_prompt(
 {codes_text}
 
 每项标准均需提供：
-- 1 到 5 分的整数评分（1 分较差，5 分优秀）
+- 1 到 5 的整数评分，按下面的锚点选择，不要另用笼统的好坏等级
+{format_criterion_scales()}
+- 背景介绍、专业身份或访谈提纲章节，模式性只能是 1 分或 2 分
 - 解释评分依据的具体反馈
 - 低于 4 分时给出改进建议
 - 如果编码不足以支持某项判断，指出证据缺口，不编造依据
 - 候选机制应有具体编码支持，保留反例与未知；不能把受访者的原因判断写成已证实原因
-- 主题必须呈现共享意义模式；仅为访谈章节或话题摘要时，降低概念清晰度评分并建议降级为背景或并入其他主题
+- 主题必须呈现共享意义模式；仅为访谈章节、背景介绍或话题摘要时，模式性不得高于 2 分，并建议降级为背景或并入其他主题
 - 反馈使用与主题和编码相同的语言
 
 同时判断：
@@ -270,7 +350,7 @@ def build_full_evaluation_prompt(
   "coverage_score": 4,
   "coverage_feedback": "覆盖度的具体反馈",
   "actionability_score": 4,
-  "actionability_feedback": "概念清晰度的具体反馈",
+  "actionability_feedback": "模式性的具体反馈",
   "distinctiveness_score": 4,
   "distinctiveness_feedback": "区分度的具体反馈",
   "relevance_score": 4,
@@ -288,12 +368,26 @@ def build_refinement_prompt(
     global_feedback: str,
     codes: Sequence[Mapping[str, Any]],
     study: ResearchProfile = ResearchProfile(),
+    memos: Sequence[Mapping[str, Any]] | None = None,
 ) -> str:
     themes_text = json.dumps(themes, ensure_ascii=False, indent=2)
     evaluations_text = json.dumps(theme_evaluations, ensure_ascii=False, indent=2)
     codes_text = json.dumps(codes, ensure_ascii=False, indent=2)
+    visible_memos = [
+        {
+            "theme": item.get("theme") or "",
+            "supporting_code_ids": item.get("supporting_code_ids") or [],
+            "rationale": item.get("rationale") or "",
+            "contradicting_code_ids": item.get("contradicting_code_ids") or [],
+            "uncertain": item.get("uncertain") or "",
+        }
+        for item in (memos or [])
+    ]
+    memo_text = json.dumps(visible_memos, ensure_ascii=False, indent=2) if visible_memos else ""
+    memo_section = f"\n分析备忘录（只含已经写好的理由，不含研究者手写内容）：\n{memo_text}\n" if memo_text else ""
     return f"""你是一名质性研究者，正在根据评估反馈修订主题。
 {study.prompt_section()}
+{memo_section}
 
 请使用以下四种操作制定修订计划；"operation" 字段使用括号中的英文值：
 1. 增加（"add"）：补充评估中发现缺失的重要主题
@@ -318,10 +412,10 @@ def build_refinement_prompt(
 - 针对问题制定具体操作，优先顺序为删除、合并、拆分、增加
 - 拆分时创建 2 至 3 个概念不同的新主题；合并时创建一个涵盖相关概念的新主题
 - 增加主题时，从原始编码中识别遗漏的重要规律
-- 修订应改善覆盖度、概念清晰度、区分度和相关性
+- 修订应改善覆盖度、模式性、区分度和相关性
 - 对仅为访谈章节或话题摘要的条目，用 delete 降级为背景，或用 combine 并入具有共享意义的主题
 - 所有新增或修改的主题都必须有提供的编码作为依据，不编造背景或证据
-- 新主题应包含 kind、code_ids、counterexample_code_ids 和 open_questions；保留具体证据链，不因反例或未知降低表面整齐度而删去它们
+- 新主题应包含 kind、code_ids、counterexample_code_ids、open_questions、rationale 和 uncertain；保留具体证据链，不因反例或未知降低表面整齐度而删去它们
 - 候选机制始终标记为候选，材料不足时记录证据缺口，不宣称原因已证实
 - 新主题、操作理由及计划摘要使用与当前主题和编码相同的语言
 
@@ -339,6 +433,8 @@ def build_refinement_prompt(
         "code_ids": [0],
         "counterexample_code_ids": [],
         "open_questions": [],
+        "rationale": "为什么这些编码构成同一个模式",
+        "uncertain": "",
         "codes": ["相关的原始编码描述"]
       }}
     }}

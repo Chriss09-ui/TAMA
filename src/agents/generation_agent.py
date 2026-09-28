@@ -17,10 +17,12 @@ from chunking import (
     plan_chunks,
     resolve_chunk_strategy,
 )
+from codebook import exact_merge, semantic_merge
 from prompts import (
     CODE_EXTRACTION_SYSTEM_PROMPT,
     THEME_GENERATION_SYSTEM_PROMPT,
     build_code_extraction_prompt,
+    build_code_merge_prompt,
     build_theme_generation_prompt,
     build_theme_consolidation_prompt,
 )
@@ -28,6 +30,20 @@ from research_profile import ResearchProfile
 
 
 THEME_BATCH_SIZE = 40
+
+
+def family_ids(code_id, code_by_id):
+    """Return a canonical code id together with every id merged into it."""
+    code = code_by_id.get(code_id)
+    if code is not None and code.merged_into is not None and code.merged_into in code_by_id:
+        code_id = code.merged_into
+        code = code_by_id.get(code_id)
+    ids = []
+    if isinstance(code_id, int):
+        ids.append(code_id)
+    if code is not None:
+        ids.extend(member for member in code.merged_from if isinstance(member, int))
+    return ids
 
 
 class Chunk(BaseModel):
@@ -53,6 +69,14 @@ class Code(BaseModel):
     statement_type: str = "undetermined"
     verification_status: str = "unknown"
     open_question: str = ""
+    name: str = ""
+    definition: str = ""
+    include: str = ""
+    exclude: str = ""
+    merged_from: List[int] = Field(default_factory=list)
+    merged_into: Optional[int] = None
+    version: int = 1
+    in_vivo: bool = False
 
 
 class Theme(BaseModel):
@@ -64,6 +88,8 @@ class Theme(BaseModel):
     code_ids: List[int] = Field(default_factory=list)
     counterexample_code_ids: List[int] = Field(default_factory=list)
     open_questions: List[str] = Field(default_factory=list)
+    rationale: str = ""
+    uncertain: str = ""
 
 
 class GenerationAgent:
@@ -106,6 +132,7 @@ class GenerationAgent:
         self.last_chunk_plan = None
         self.study = study or ResearchProfile()
         self.analytic_storyline = ""
+        self.codebook_note = ""
 
     def chunk_transcript(self, transcript: str) -> List[Chunk]:
         """
@@ -181,9 +208,16 @@ class GenerationAgent:
                 open_question = f"{open_question}；原文摘录未匹配到输入片段，需人工核对".strip("；")
             elif not excerpt:
                 open_question = f"{open_question}；缺少逐字原文，需人工核对".strip("；")
+            name = str(code_data.get("name") or code_data.get("description") or "").strip()
+            description = str(code_data.get("description") or name).strip()
             codes.append(Code(
                 code_id=idx,
-                description=code_data["description"],
+                description=description,
+                name=name,
+                definition=str(code_data.get("definition") or ""),
+                include=str(code_data.get("include") or ""),
+                exclude=str(code_data.get("exclude") or ""),
+                in_vivo=code_data.get("in_vivo") in (True, "true", "True", "yes", "是"),
                 source_chunks=[chunk.chunk_id],
                 excerpt=verified_excerpt,
                 source_start=chunk.start_char + offset if offset >= 0 else None,
@@ -224,6 +258,44 @@ class GenerationAgent:
 
         return all_codes
 
+    def consolidate_codebook(self, codes: List[Code]) -> List[Code]:
+        """Merge identical labels, then ask the model to merge synonyms."""
+        self.codebook_note = ""
+        exact_merge(codes)
+        active = [code for code in codes if code.merged_into is None]
+        if len(active) < 2:
+            return codes
+        payload = [
+            {
+                "code_id": code.code_id,
+                "name": code.name or code.description,
+                "description": code.description,
+                "definition": code.definition,
+                "include": code.include,
+                "exclude": code.exclude,
+                "excerpt": (code.excerpt or "")[:180],
+            }
+            for code in active
+        ]
+        if self.before_model_call:
+            self.before_model_call("归并编码")
+        response = self.client.chat.completions.create(
+            model=self.model,
+            messages=[
+                {"role": "system", "content": CODE_EXTRACTION_SYSTEM_PROMPT},
+                {"role": "user", "content": build_code_merge_prompt(payload, self.study)},
+            ],
+            temperature=0.2,
+            response_format={"type": "json_object"},
+        )
+        try:
+            result = json.loads(response.choices[0].message.content)
+            semantic_merge(codes, result.get("groups") or [])
+        except (json.JSONDecodeError, ValueError, TypeError, KeyError):
+            self.codebook_note = "模型归并结果无法使用，只合并了文字完全相同的编码。"
+            print(f"  {self.codebook_note}")
+        return codes
+
     def generate_themes(self, codes: List[Code]) -> List[Theme]:
         """
         Generate themes from codes using LLM.
@@ -235,15 +307,23 @@ class GenerationAgent:
         Returns:
             List of Theme objects
         """
+        code_by_id = {code.code_id: code for code in codes}
+        active = [code for code in codes if code.merged_into is None]
         # Collapse identical labels for synthesis while retaining every raw code.
         canonical = {}
-        for code in codes:
-            key = re.sub(r"\s+", "", code.description).casefold()
+        for code in active:
+            key = re.sub(r"\s+", "", (code.name or code.description)).casefold()
             if key not in canonical:
                 canonical[key] = {
-                    "code_id": code.code_id, "description": code.description,
-                    "excerpt": (code.excerpt or "")[:180], "focus": code.focus,
+                    "code_id": code.code_id,
+                    "description": code.name or code.description,
+                    "definition": code.definition,
+                    "include": code.include,
+                    "exclude": code.exclude,
+                    "excerpt": (code.excerpt or "")[:180],
+                    "focus": code.focus,
                     "verification_status": code.verification_status,
+                    "merged_from": code.merged_from,
                     "duplicate_code_ids": [],
                 }
             else:
@@ -277,12 +357,14 @@ class GenerationAgent:
         self.analytic_storyline = result.get("analytic_storyline") or ""
         themes = []
 
-        code_by_id = {code.code_id: code for code in codes}
         ids_by_description = {}
         for code in codes:
             ids_by_description.setdefault(code.description, []).append(code.code_id)
+            if code.name:
+                ids_by_description.setdefault(code.name, []).append(code.code_id)
         duplicates = {item["code_id"]: item["duplicate_code_ids"] for item in compact}
         for theme_data in result.get("themes", []):
+            memo = theme_data.get("memo") if isinstance(theme_data.get("memo"), dict) else {}
             code_ids = [
                 code_id for code_id in theme_data.get("code_ids", [])
                 if isinstance(code_id, int) and code_id in code_by_id
@@ -294,12 +376,24 @@ class GenerationAgent:
                     for code_id in ids_by_description.get(description, [])
                 ]
             code_ids = list(dict.fromkeys(
-                expanded for code_id in code_ids for expanded in (code_id, *duplicates.get(code_id, []))
+                expanded
+                for code_id in code_ids
+                for expanded in (*family_ids(code_id, code_by_id), *duplicates.get(code_id, []))
             ))
+            raw_counters = [
+                *(theme_data.get("counterexample_code_ids") or []),
+                *(theme_data.get("contradicting_code_ids") or []),
+                *(memo.get("contradicting_code_ids") or []),
+            ]
             counterexample_ids = [
-                code_id for code_id in theme_data.get("counterexample_code_ids", [])
+                code_id for code_id in raw_counters
                 if isinstance(code_id, int) and code_id in code_by_id
             ]
+            counterexample_ids = list(dict.fromkeys(
+                expanded
+                for code_id in counterexample_ids
+                for expanded in family_ids(code_id, code_by_id)
+            ))
             kind = theme_data.get("kind") or "pattern"
             questions = list(theme_data.get("open_questions") or [])
             if not code_ids:
@@ -308,11 +402,13 @@ class GenerationAgent:
             themes.append(Theme(
                 name=theme_data["name"],
                 description=theme_data["description"],
-                codes=[code_by_id[code_id].description for code_id in code_ids],
+                codes=[code_by_id[code_id].description for code_id in code_ids if code_id in code_by_id],
                 kind=kind,
                 code_ids=code_ids,
-                counterexample_code_ids=list(dict.fromkeys(counterexample_ids)),
+                counterexample_code_ids=counterexample_ids,
                 open_questions=questions,
+                rationale=str(theme_data.get("rationale") or memo.get("rationale") or ""),
+                uncertain=str(theme_data.get("uncertain") or memo.get("uncertain") or ""),
             ))
 
         return themes
@@ -342,15 +438,20 @@ class GenerationAgent:
         Returns:
             Dictionary containing chunks, codes, and themes
         """
-        print("Step 1/3: Chunking transcript...")
+        print("Step 1/4: Chunking transcript...")
         chunks = self.chunk_transcript(transcript)
         print(f"  Generated {len(chunks)} chunks")
 
-        print("Step 2/3: Generating codes from chunks...")
+        print("Step 2/4: Generating codes from chunks...")
         codes = self.generate_codes(chunks)
         print(f"  Generated {len(codes)} codes")
 
-        print("Step 3/3: Generating themes from codes...")
+        print("Step 3/4: Consolidating the codebook...")
+        codes = self.consolidate_codebook(codes)
+        active_codes = sum(1 for code in codes if code.merged_into is None)
+        print(f"  Codebook entries: {active_codes}")
+
+        print("Step 4/4: Generating themes from codes...")
         themes = self.generate_themes(codes)
         print(f"  Generated {len(themes)} themes")
 
@@ -359,6 +460,7 @@ class GenerationAgent:
             "codes": [code.model_dump() for code in codes],
             "themes": [theme.model_dump() for theme in themes],
             "analytic_storyline": self.analytic_storyline,
+            "codebook_note": self.codebook_note,
             "chunking": self.last_chunk_plan.to_dict() if self.last_chunk_plan else None,
         }
 

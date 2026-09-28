@@ -30,6 +30,19 @@ from prompts import (
     JEV_CONNECTION_TEST_STATE,
 )
 from model_config import api_model_name
+from reflexivity import (
+    POSITION_FIELD,
+    REFLEXIVITY_CHECKS,
+    REFLEXIVITY_FIELDS,
+    empty_reflexivity,
+    load_reflexivity,
+    save_reflexivity,
+)
+from reporting import report_lines
+
+def reflexivity_path() -> Path:
+    override = os.environ.get("TAMA_REFLEXIVITY_PATH", "").strip()
+    return Path(override) if override else ROOT / "reflexivity.md"
 
 JEV_DECISION_MODE = "Jev（实验性）"
 
@@ -260,79 +273,44 @@ def read_transcript(source: str, pasted_text: str, uploaded_file) -> str:
     return uploaded_file.getvalue().decode("utf-8-sig").strip()
 
 
-def build_result_docx(result: dict) -> bytes:
-    """Create a readable Word report containing the final themes and codes."""
+def build_result_docx(result: dict, reflexivity: dict | None = None, interpretations: list | None = None) -> bytes:
+    """Create a readable Word report with quotes, analysis, and blank interpretation."""
     document = Document()
-    document.add_heading("访谈质性分析报告", 0)
-    document.add_paragraph(f"分析编号：{result['session_name']}")
-    if result.get("timestamp"):
-        document.add_paragraph(f"分析时间：{result['timestamp']}")
-    if result.get("case_id"):
-        document.add_paragraph(f"匿名案例编号：{result['case_id']}")
-    model = result.get("configuration", {}).get("model")
-    if model:
-        document.add_paragraph(f"模型：{model}")
-    document.add_paragraph(f"状态：{'达到评估标准' if result['accepted'] else '已达到最大评估轮次'}")
-    document.add_paragraph(f"平均分：{result['metadata']['final_average_score']:.2f} / 5")
-    document.add_paragraph(f"评估轮次：{result['refinement_iterations']}")
-    document.add_paragraph("评估分数衡量分析结果的呈现质量；候选机制仍需研究者结合案例证据核查。")
-
-    final_evaluation = result.get("final_evaluation") or {}
-    global_feedback = final_evaluation.get("global_feedback")
-    flagged_themes = final_evaluation.get("flagged_themes", [])
-    if global_feedback:
-        document.add_heading("最终评估", level=1)
-        document.add_paragraph(global_feedback)
-    if flagged_themes:
-        document.add_paragraph(
-            f"建议人工复核（{len(flagged_themes)}）：{'、'.join(flagged_themes)}"
-        )
-
-    themes = result["final_themes"]
-    code_by_id = {code.get("code_id"): code for code in result.get("codes", [])}
-    document.add_heading(f"最终主题（{len(themes)}）", level=1)
-    if not themes:
-        document.add_paragraph("本次分析没有生成主题。")
-    for index, theme in enumerate(themes, 1):
-        document.add_heading(f"{index}. {theme['name']}", level=2)
-        document.add_paragraph(f"类型：{THEME_KIND_LABELS.get(theme.get('kind'), '待分类')}")
-        document.add_paragraph(theme["description"])
-        code_ids = theme.get("code_ids") or []
-        if code_ids and code_by_id:
-            document.add_paragraph(f"关联编码（{len(code_ids)}）")
-            for code_id in code_ids:
-                code = code_by_id.get(code_id)
-                if not code:
-                    continue
-                document.add_paragraph(f"[{code_id}] {code['description']}", style="List Bullet")
-                if code.get("excerpt"):
-                    document.add_paragraph(f"原话：{code['excerpt']}")
-                document.add_paragraph(
-                    f"陈述类型：{STATEMENT_TYPE_LABELS.get(code.get('statement_type'), '待判定')}；"
-                    f"核验状态：{VERIFICATION_LABELS.get(code.get('verification_status'), '尚未核实')}"
-                )
-                if code.get("open_question"):
-                    document.add_paragraph(f"待核查：{code['open_question']}")
+    heading_levels = {"title": 0, "h1": 1, "h2": 2, "h3": 3}
+    for kind, text in report_lines(result, reflexivity, interpretations):
+        level = heading_levels.get(kind)
+        if level is not None:
+            document.add_heading(text, level)
+        elif kind == "bullet":
+            document.add_paragraph(text, style="List Bullet")
         else:
-            for code in theme.get("codes", []):
-                document.add_paragraph(str(code), style="List Bullet")
-        if theme.get("counterexample_code_ids"):
-            document.add_paragraph(f"反例编码：{', '.join(map(str, theme['counterexample_code_ids']))}")
-        for question in theme.get("open_questions", []):
-            document.add_paragraph(f"待核查：{question}")
-
-    if result.get("codes"):
-        document.add_heading(f"完整编码台账（{len(result['codes'])}）", level=1)
-        for code in result["codes"]:
-            document.add_paragraph(f"[{code.get('code_id', '?')}] {code['description']}", style="List Bullet")
-            if code.get("excerpt"):
-                document.add_paragraph(f"原话：{code['excerpt']}")
-            if code.get("open_question"):
-                document.add_paragraph(f"待核查：{code['open_question']}")
-
+            document.add_paragraph(text)
     buffer = BytesIO()
     document.save(buffer)
     return buffer.getvalue()
+
+
+def reflexivity_from_state() -> dict:
+    """Read the on-page reflexivity notes. They are not part of the analysis request."""
+    data = empty_reflexivity()
+    for key in data:
+        data[key] = st.session_state.get(f"reflexivity_{key}", "")
+    return data
+
+
+def ensure_reflexivity_state() -> None:
+    if st.session_state.get("_reflexivity_loaded"):
+        return
+    path = reflexivity_path()
+    stored = load_reflexivity(path) if path.is_file() else empty_reflexivity()
+    for key, value in stored.items():
+        st.session_state.setdefault(f"reflexivity_{key}", value)
+    st.session_state["_reflexivity_loaded"] = True
+
+
+def save_reflexivity_notes() -> None:
+    save_reflexivity(reflexivity_path(), reflexivity_from_state())
+    st.session_state["reflexivity_notice"] = "自反记录已写在本机 reflexivity.md，没有发送给模型。"
 
 
 def render_result(result: dict) -> None:
@@ -371,9 +349,13 @@ def render_result(result: dict) -> None:
         )
 
     st.subheader("保存结果")
+    interpretations = [
+        st.session_state.get(f"theme_interpretation_{index}", "")
+        for index in range(len(themes))
+    ]
     st.download_button(
         "保存 Word 报告（DOCX）",
-        data=build_result_docx(result),
+        data=build_result_docx(result, reflexivity_from_state(), interpretations),
         file_name=f"{result['session_name']}.docx",
         mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         use_container_width=True,
@@ -397,6 +379,28 @@ def render_result(result: dict) -> None:
     else:
         st.caption("结果仅保存在当前服务进程内；服务重启后无法恢复，可按需下载。")
 
+    plan_groups = (result.get("next_data_plan") or {}).get("groups") or {}
+    if any(plan_groups.values()):
+        st.subheader("下一轮可以收集什么")
+        for group_name in ("需补访角色", "需查材料", "需核对信息"):
+            entries = plan_groups.get(group_name) or []
+            if not entries:
+                continue
+            st.markdown(f"**{group_name}**")
+            for entry in entries:
+                st.write(f"• {entry}")
+
+    if result.get("memos"):
+        with st.expander("分析备忘录"):
+            st.caption("模型写下的是理由和不确定。你补在 Word 报告「诠释」栏里的话不会进入模型。")
+            for memo in result["memos"]:
+                st.markdown(f"**{memo.get('theme') or '未命名主题'}**")
+                st.write(memo.get("rationale") or "模型没有写下理由。")
+                if memo.get("uncertain"):
+                    st.write(f"不确定：{memo['uncertain']}")
+                if memo.get("contradicting_code_ids"):
+                    st.write(f"反证编码：{', '.join(map(str, memo['contradicting_code_ids']))}")
+
     if not themes:
         st.info("本次分析没有生成主题。请检查输入文本和模型返回内容。")
         return
@@ -406,14 +410,20 @@ def render_result(result: dict) -> None:
             st.subheader(f"{index:02d} · {theme['name']}")
             st.caption(THEME_KIND_LABELS.get(theme.get("kind"), "待分类"))
             st.write(theme["description"])
+            if theme.get("rationale"):
+                st.write(f"备忘录：{theme['rationale']}")
             code_ids = theme.get("code_ids") or []
+            counter_ids = set(theme.get("counterexample_code_ids") or [])
             if code_ids and code_by_id:
                 with st.expander(f"查看证据与编码 · {len(code_ids)} 条"):
                     for code_id in code_ids:
                         code = code_by_id.get(code_id)
                         if not code:
                             continue
-                        st.markdown(f"**[{code_id}] {code['description']}**")
+                        label = code.get("name") or code["description"]
+                        st.markdown(f"**[{code_id}] {label}**")
+                        if code.get("definition"):
+                            st.caption(f"定义：{code['definition']}")
                         if code.get("excerpt"):
                             st.write(f"原话：{code['excerpt']}")
                         st.caption(
@@ -426,19 +436,64 @@ def render_result(result: dict) -> None:
                 with st.expander(f"查看关联编码 · {len(theme['codes'])} 条"):
                     for code in theme["codes"]:
                         st.write(f"• {code}")
-            if theme.get("counterexample_code_ids"):
-                st.caption(f"反例编码：{', '.join(map(str, theme['counterexample_code_ids']))}")
+            if counter_ids:
+                st.markdown("**反例与边界**")
+                for code_id in theme.get("counterexample_code_ids") or []:
+                    code = code_by_id.get(code_id)
+                    if not code:
+                        st.write(f"反例编码：{code_id}")
+                        continue
+                    st.write(f"[{code_id}] {code.get('name') or code.get('description')}")
+                    if code.get("excerpt"):
+                        st.write(f"原话：{code['excerpt']}")
             for question in theme.get("open_questions", []):
                 st.write(f"待核查：{question}")
+            st.text_area(
+                "诠释（由你写，不发送给模型）",
+                key=f"theme_interpretation_{index - 1}",
+                height=80,
+                placeholder="所以这一模式意味着什么？",
+            )
 
-    if result.get("codes"):
-        with st.expander(f"完整编码台账 · {len(result['codes'])} 条"):
-            for code in result["codes"]:
-                st.markdown(f"**[{code.get('code_id', '?')}] {code['description']}**")
+    canonical_codes = [
+        code for code in result.get("codes") or []
+        if code.get("merged_into") is None
+    ]
+    if canonical_codes:
+        with st.expander(f"编码簿 · {len(canonical_codes)} 条主编码"):
+            for code in canonical_codes:
+                label = code.get("name") or code.get("description")
+                st.markdown(f"**[{code.get('code_id', '?')}] {label}**")
+                if code.get("definition"):
+                    st.write(f"定义：{code['definition']}")
+                if code.get("include"):
+                    st.write(f"包含：{code['include']}")
+                if code.get("exclude"):
+                    st.write(f"排除：{code['exclude']}")
+                if code.get("merged_from"):
+                    st.caption(f"并入来源：{', '.join(map(str, code['merged_from']))}")
                 if code.get("excerpt"):
-                    st.write(f"原话：{code['excerpt']}")
+                    st.write(f"正例：{code['excerpt']}")
                 if code.get("open_question"):
                     st.write(f"待核查：{code['open_question']}")
+
+
+def render_reflexivity() -> None:
+    """Local notes for the researcher. Nothing here is sent with the transcript."""
+    ensure_reflexivity_state()
+    with st.expander("研究者自反（只保存在本机，不发送给模型）"):
+        st.caption("跑完一轮后可以顺手填。这些话进入 Word 报告的立场和自反两节，不进入编码或主题。")
+        _key, label, help_text = POSITION_FIELD
+        st.text_area(label, key="reflexivity_position", height=80, help=help_text)
+        for key, label, help_text in REFLEXIVITY_FIELDS:
+            st.text_area(label, key=f"reflexivity_{key}", height=80, help=help_text)
+        st.markdown("**定稿前可以自问**")
+        for key, label in REFLEXIVITY_CHECKS:
+            st.text_area(label, key=f"reflexivity_{key}", height=68)
+        st.button("保存自反记录", key="save_reflexivity", on_click=save_reflexivity_notes)
+        notice = st.session_state.pop("reflexivity_notice", None)
+        if notice:
+            st.success(notice)
 
 
 def render_methodology_references() -> None:
@@ -830,6 +885,7 @@ def main() -> None:
     elif running:
         render_active_job()
 
+    render_reflexivity()
     st.divider()
     if "analysis_result" in st.session_state:
         render_result(st.session_state["analysis_result"])

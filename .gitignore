@@ -60,3 +60,6 @@ htmlcov/
 .DS_Store
 .AppleDouble
 .LSOverride
+
+# Researcher notes stay on this machine
+reflexivity.md

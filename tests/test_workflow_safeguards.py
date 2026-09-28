@@ -120,6 +120,11 @@ class WorkflowSafeguardTests(unittest.TestCase):
             )
             persisted = (output / "study" / "00_final_results.json").read_text(encoding="utf-8")
             self.assertNotIn("private quote", persisted)
+            codebook = (output / "study" / "05_codebook.md").read_text(encoding="utf-8")
+            self.assertNotIn("private quote", codebook)
+            self.assertIn("编码簿", codebook)
+            self.assertTrue((output / "study" / "04_memos.md").is_file())
+            self.assertTrue((output / "study" / "next_data_plan.md").is_file())
             self.assertEqual(saved["codes"][0]["excerpt"], "private quote")
             again = framework.run_analysis(
                 "private quote", session_name="study", save_final=True, save_intermediate=False,

@@ -1,6 +1,7 @@
 import json
 import os
 import sys
+import tempfile
 import unittest
 from io import BytesIO
 from pathlib import Path
@@ -198,6 +199,7 @@ class StreamlitAppTests(unittest.TestCase):
         references = next(
             item for item in app.expander if item.label == "查看切块策略说明和文献"
         ).markdown[0].value
+        self.assertIn("什么让我惊喜？", [item.label for item in app.text_area])
         self.assertIn("TAMA 原始方法", references)
         self.assertIn("Lost in the Middle", references)
         self.assertIn("Token 用量计算", references)
@@ -205,6 +207,28 @@ class StreamlitAppTests(unittest.TestCase):
         app.text_area(key="transcript_text").set_value("访谈者：工作有什么变化？\n受访者：开始远程办公。 ").run()
         self.assertIn("切块预估", [item.value for item in app.subheader])
         self.assertTrue(any("预计" in item.value and "片段" in item.value for item in app.markdown))
+
+    def test_reflexivity_notes_save_locally_and_are_not_sent_to_analysis(self):
+        with tempfile.TemporaryDirectory() as temp, patch.dict(
+            os.environ, {"TAMA_REFLEXIVITY_PATH": str(Path(temp) / "reflexivity.md")}, clear=True,
+        ), patch("tama.TAMAFramework") as framework:
+            framework.return_value.run_analysis.return_value = {
+                "session_name": "local-notes", "accepted": True,
+                "metadata": {"final_average_score": 4.0},
+                "refinement_iterations": 1, "final_themes": [],
+            }
+            app = AppTest.from_file(str(APP_PATH)).run()
+            app.text_area(key="reflexivity_surprise").set_value("表格交上去之后没人看").run()
+            app.button(key="save_reflexivity").click().run()
+            saved = (Path(temp) / "reflexivity.md").read_text(encoding="utf-8")
+            self.assertIn("表格交上去之后没人看", saved)
+            self.assertIn("不会发送给模型", saved)
+            app.text_area(key="transcript_text").set_value("一段测试访谈").run()
+            app.text_input(key="api_key_DeepSeek").set_value("test-key").run()
+            app.button(key="run_analysis").click().run()
+            self.assertTrue(app.session_state["analysis_job"].done.wait(2))
+            self.assertNotIn("reflexivity", framework.call_args.kwargs)
+            self.assertNotIn("表格交上去之后没人看", framework.return_value.run_analysis.call_args.kwargs["transcript"])
 
     def test_analysis_displays_theme_without_network_request(self):
         result = {

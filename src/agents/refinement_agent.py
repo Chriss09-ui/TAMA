@@ -60,7 +60,8 @@ class RefinementAgent:
         self,
         themes: List[Dict[str, Any]],
         evaluation_results: Dict[str, Any],
-        codes: List[Dict[str, Any]]
+        codes: List[Dict[str, Any]],
+        memos: Optional[List[Dict[str, Any]]] = None,
     ) -> RefinementPlan:
         """
         Create a plan for refining themes based on evaluation feedback.
@@ -82,6 +83,7 @@ class RefinementAgent:
                 "excerpt": str(code.get("excerpt") or "")[:120],
             } for code in codes],
             study=self.study,
+            memos=memos,
         )
 
         if self.before_model_call:
@@ -220,7 +222,8 @@ class RefinementAgent:
         themes: List[Dict[str, Any]],
         evaluation_results: Dict[str, Any],
         codes: List[Dict[str, Any]],
-        save_path: str = None
+        save_path: str = None,
+        memos: Optional[List[Dict[str, Any]]] = None,
     ) -> Dict[str, Any]:
         """
         Run the refinement process on themes based on evaluation feedback.
@@ -235,7 +238,7 @@ class RefinementAgent:
             Dictionary containing refinement plan and refined themes
         """
         print("\nCreating refinement plan...")
-        plan = self.create_refinement_plan(themes, evaluation_results, codes)
+        plan = self.create_refinement_plan(themes, evaluation_results, codes, memos=memos)
 
         print(f"\nRefinement Plan Summary: {plan.summary}")
         print(f"Total operations: {len(plan.operations)}")

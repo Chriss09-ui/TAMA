@@ -18,8 +18,8 @@ from prompts import (
     DEFAULT_COVERAGE_CRITERION,
     DEFAULT_DISTINCTIVENESS_CRITERION,
     DEFAULT_RELEVANCE_CRITERION,
+    CRITERION_SCALES,
     EVALUATION_FEEDBACK_SYSTEM_PROMPT,
-    EVALUATION_SCALE,
     FULL_EVALUATION_SYSTEM_PROMPT,
     build_evaluation_feedback_prompt,
     build_evaluation_question_instructions,
@@ -188,30 +188,18 @@ class EvaluationAgent:
             "original_codes": original_codes,
             "research_focus": self.study.prompt_section(),
         }
-        scale = list(EVALUATION_SCALE)
         instructions = build_evaluation_question_instructions(self.criteria)
         questions = {
-            "coverage": DecisionQuestion(
-                key="coverage", kind="score", scale=scale,
-                instructions=instructions["coverage"],
-            ),
-            "actionability": DecisionQuestion(
-                key="actionability", kind="score", scale=scale,
-                instructions=instructions["actionability"],
-            ),
-            "distinctiveness": DecisionQuestion(
-                key="distinctiveness", kind="score", scale=scale,
-                instructions=instructions["distinctiveness"],
-            ),
-            "relevance": DecisionQuestion(
-                key="relevance", kind="score", scale=scale,
-                instructions=instructions["relevance"],
-            ),
-            "needs_refinement": DecisionQuestion(
-                key="needs_refinement", kind="noul",
-                instructions=instructions["needs_refinement"],
-            ),
+            key: DecisionQuestion(
+                key=key, kind="score", scale=list(CRITERION_SCALES[key]),
+                instructions=instructions[key],
+            )
+            for key in ("coverage", "actionability", "distinctiveness", "relevance")
         }
+        questions["needs_refinement"] = DecisionQuestion(
+            key="needs_refinement", kind="noul",
+            instructions=instructions["needs_refinement"],
+        )
 
         if self.before_model_call:
             self.before_model_call(f"评估主题 · {theme['name']}")
@@ -235,7 +223,8 @@ class EvaluationAgent:
         confidences = {}
         for key in score_keys:
             raw = answers[key].score if answers[key].score is not None else 0.0
-            bounded_raw = min(float(len(scale) - 1), max(0.0, raw))
+            scale_size = len(questions[key].scale or CRITERION_SCALES[key])
+            bounded_raw = min(float(scale_size - 1), max(0.0, raw))
             # Answers carry a zero-based weighted level index; convert half-up
             # for legacy integer fields, while keeping the continuous 1-5
             # value for branching and aggregate evaluation.
@@ -496,7 +485,7 @@ class EvaluationAgent:
             if coverage_issues > 0:
                 issues.append(f"覆盖度（{coverage_issues} 个主题）")
             if actionability_issues > 0:
-                issues.append(f"概念清晰度（{actionability_issues} 个主题）")
+                issues.append(f"模式性（{actionability_issues} 个主题）")
             if distinctiveness_issues > 0:
                 issues.append(f"区分度（{distinctiveness_issues} 个主题）")
             if relevance_issues > 0:

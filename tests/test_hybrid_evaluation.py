@@ -15,11 +15,11 @@ sys.path.insert(0, str(ROOT))
 from agents.evaluation_agent import EvaluationAgent, EvaluationResult
 from decisions.base import DecisionAnswer, DecisionProvider, DecisionProviderError
 from decisions.jev_client import JevDecisionClient
+from prompts import CRITERION_SCALES
 
 
 THEME = {"name": "日常安排", "description": "日常出行的调整。", "codes": ["通勤安排的变化"]}
 CODES = [{"description": "通勤安排的变化"}]
-SCALE = ["1 分：较差", "2 分：较弱", "3 分：一般", "4 分：良好", "5 分：优秀"]
 
 
 def fake_response(data):
@@ -99,7 +99,9 @@ class HybridEvaluationTests(unittest.TestCase):
         self.assertEqual(set(questions), {
             "coverage", "actionability", "distinctiveness", "relevance", "needs_refinement",
         })
-        self.assertEqual(questions["coverage"].scale, SCALE)
+        self.assertEqual(questions["coverage"].scale, list(CRITERION_SCALES["coverage"]))
+        self.assertIn("不得高于 2 分", questions["actionability"].instructions)
+        self.assertNotEqual(questions["coverage"].scale, questions["actionability"].scale)
         self.assertEqual(questions["needs_refinement"].kind, "noul")
         self.assertIn("覆盖度", questions["needs_refinement"].instructions)
         self.assertIn("区分度", questions["needs_refinement"].instructions)

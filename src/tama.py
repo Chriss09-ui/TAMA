@@ -13,8 +13,17 @@ from agents.generation_agent import GenerationAgent
 from agents.evaluation_agent import EvaluationAgent
 from agents.refinement_agent import RefinementAgent
 from chunking import ChunkStrategy, resolve_chunk_strategy
+from codebook import render_codebook
 from decisions.base import DecisionProvider
+from memos import (
+    attach_operation_rationales,
+    build_theme_memos,
+    memos_for_model,
+    render_memos_markdown,
+)
+from next_data_plan import build_next_data_plan
 from prompts import ENTERPRISE_CRITERIA
+from reporting import render_summary_text
 from research_profile import resolve_profile
 
 
@@ -210,6 +219,8 @@ class TAMAFramework:
 
         themes = link_themes_to_codes(generation_result["themes"], generation_result["codes"])
         codes = generation_result["codes"]
+        memos = build_theme_memos(themes, iteration=0)
+        self._write_memo_iteration(session_dir, memos, 0)
 
         # Phase 2: Iterative Evaluation and Refinement
         iteration = 0
@@ -288,11 +299,17 @@ class TAMAFramework:
                 themes=themes,
                 evaluation_results=evaluation_result,
                 codes=codes,
-                save_path=refinement_path
+                save_path=refinement_path,
+                memos=memos_for_model(memos),
             )
 
             # Update themes for next iteration
             themes = link_themes_to_codes(refinement_result["refined_themes"], codes)
+            attach_operation_rationales(
+                themes, refinement_result.get("refinement_plan", {}).get("operations"),
+            )
+            memos = build_theme_memos(themes, previous=memos, iteration=iteration)
+            self._write_memo_iteration(session_dir, memos, iteration)
 
             # Track refinement history
             refinement_history.append({
@@ -339,6 +356,7 @@ class TAMAFramework:
                 "initial_num_themes": len(generation_result["themes"]),
                 "chunking": generation_result.get("chunking"),
                 "analytic_storyline": generation_result.get("analytic_storyline", ""),
+                "codebook_note": generation_result.get("codebook_note", ""),
             },
             "refinement_iterations": iteration,
             "score_history": score_history,
@@ -346,6 +364,8 @@ class TAMAFramework:
             "refinement_history": refinement_history,
             "codes": codes,
             "final_themes": themes,
+            "memos": memos,
+            "next_data_plan": build_next_data_plan(codes, themes, memos),
             "final_evaluation": evaluation_result,
             "accepted": is_acceptable,
             "metadata": {
@@ -353,6 +373,8 @@ class TAMAFramework:
                 "final_average_score": evaluation_result["average_score"]
             }
         }
+        if session_dir:
+            final_result["output_dir"] = session_dir
 
         if save_final:
             final_path = os.path.join(session_dir, "00_final_results.json")
@@ -367,6 +389,10 @@ class TAMAFramework:
 
         if save_final:
             self._save_readable_summary(session_dir, persisted)
+        if session_dir:
+            self._write_research_records(
+                session_dir, memos, codes, final_result["next_data_plan"], redact_saved_quotes,
+            )
 
         print("\n" + "=" * 80)
         print("TAMA ANALYSIS COMPLETE")
@@ -374,49 +400,30 @@ class TAMAFramework:
 
         return final_result
 
+    def _write_memo_iteration(self, session_dir, memos, iteration):
+        if not session_dir:
+            return
+        path = os.path.join(session_dir, f"04_memos_iter{iteration}.json")
+        with open(path, "w", encoding="utf-8") as handle:
+            json.dump(memos_for_model(memos), handle, indent=2, ensure_ascii=False)
+
+    def _write_research_records(self, session_dir, memos, codes, plan, redact_saved_quotes):
+        memo_path = os.path.join(session_dir, "04_memos.md")
+        with open(memo_path, "w", encoding="utf-8") as handle:
+            handle.write(render_memos_markdown(memos))
+        with open(os.path.join(session_dir, "04_memos.json"), "w", encoding="utf-8") as handle:
+            json.dump(memos_for_model(memos), handle, indent=2, ensure_ascii=False)
+        with open(os.path.join(session_dir, "05_codebook.md"), "w", encoding="utf-8") as handle:
+            handle.write(render_codebook(codes, include_excerpts=not redact_saved_quotes))
+        with open(os.path.join(session_dir, "next_data_plan.md"), "w", encoding="utf-8") as handle:
+            handle.write(plan["markdown"])
+        print(f"✓ Memos, codebook, and next-round plan saved to: {session_dir}")
+
     def _save_readable_summary(self, session_dir: str, result: Dict[str, Any]):
-        """
-        Save a human-readable summary of the analysis.
-
-        Args:
-            session_dir: Directory to save summary
-            result: Final analysis result
-        """
+        """Save a human-readable summary of the analysis."""
         summary_path = os.path.join(session_dir, "00_summary.txt")
-
-        with open(summary_path, 'w') as f:
-            f.write("=" * 80 + "\n")
-            f.write("TAMA THEMATIC ANALYSIS - SUMMARY\n")
-            f.write("=" * 80 + "\n\n")
-
-            f.write(f"Session: {result['session_name']}\n")
-            f.write(f"Timestamp: {result['timestamp']}\n")
-            f.write(f"Model: {result['configuration']['model']}\n")
-            f.write(f"Status: {result['stop_reason'].upper()}\n")
-            f.write(f"Final Score: {result['metadata']['final_average_score']:.2f}/5.0\n")
-            f.write(f"Refinement Iterations: {result['refinement_iterations']}\n\n")
-
-            f.write("=" * 80 + "\n")
-            f.write("FINAL THEMES\n")
-            f.write("=" * 80 + "\n\n")
-
-            for idx, theme in enumerate(result['final_themes'], 1):
-                f.write(f"{idx}. {theme['name']}\n")
-                f.write(f"   {theme['description']}\n")
-                f.write(f"   Associated codes: {len(theme.get('codes', []))}\n\n")
-
-            if result['refinement_history']:
-                f.write("\n" + "=" * 80 + "\n")
-                f.write("REFINEMENT HISTORY\n")
-                f.write("=" * 80 + "\n\n")
-
-                for iteration_data in result['refinement_history']:
-                    iter_num = iteration_data['iteration']
-                    f.write(f"Iteration {iter_num}:\n")
-                    f.write(f"  Evaluation Score: {iteration_data['evaluation']['average_score']:.2f}/5.0\n")
-                    f.write(f"  Refinement: {iteration_data['refinement']['refinement_plan']['summary']}\n")
-                    f.write(f"  Theme Count: {iteration_data['refinement']['theme_count_before']} -> {iteration_data['refinement']['theme_count_after']}\n\n")
-
+        with open(summary_path, "w", encoding="utf-8") as handle:
+            handle.write(render_summary_text(result))
         print(f"✓ Human-readable summary saved to: {summary_path}")
 
 
