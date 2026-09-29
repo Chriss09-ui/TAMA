@@ -100,7 +100,7 @@ class WorkflowSafeguardTests(unittest.TestCase):
         with self.assertRaises(json.JSONDecodeError):
             agent.generate_codes_from_chunk(chunk)
 
-    def test_in_memory_run_creates_no_directory_and_redacted_save_removes_excerpt(self):
+    def test_in_memory_run_creates_no_directory_and_saved_result_keeps_excerpt(self):
         with tempfile.TemporaryDirectory() as temp, \
                 patch("tama.GenerationAgent") as generation, \
                 patch("tama.EvaluationAgent") as evaluation, \
@@ -116,12 +116,12 @@ class WorkflowSafeguardTests(unittest.TestCase):
 
             saved = framework.run_analysis(
                 "private quote", session_name="study", save_final=True,
-                save_intermediate=False, redact_saved_quotes=True,
+                save_intermediate=False,
             )
             persisted = (output / "study" / "00_final_results.json").read_text(encoding="utf-8")
-            self.assertNotIn("private quote", persisted)
+            self.assertIn("private quote", persisted)
             codebook = (output / "study" / "05_codebook.md").read_text(encoding="utf-8")
-            self.assertNotIn("private quote", codebook)
+            self.assertIn("private quote", codebook)
             self.assertIn("编码簿", codebook)
             self.assertTrue((output / "study" / "04_memos.md").is_file())
             self.assertTrue((output / "study" / "next_data_plan.md").is_file())

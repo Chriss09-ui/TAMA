@@ -83,11 +83,9 @@ the final themes, descriptions, and associated codes. Use **保存完整数据�
 to download the complete result for later processing. These downloads contain
 verbatim excerpts when present. Enable **保存本地结果** to write
 `00_final_results.json` and `00_summary.txt` under `outputs/`.
-**本地结果移除逐字引文** removes `excerpt` fields from the saved JSON; it cannot
-be combined with stage files. For no local transcript-derived files, leave both
-local saving and stage files off. The transcript still goes to the selected
-model service and the result remains in the local service process until it
-restarts or a new run replaces it.
+For no local transcript-derived files, leave both local saving and stage files
+off. The transcript still goes to the selected model service and the result
+remains in the local service process until it restarts or a new run replaces it.
 Use **清除服务内结果** after downloading to discard the latest in-memory
 result without restarting the service.
 
@@ -266,17 +264,13 @@ tama = TAMAFramework(
 
 `TAMAFramework.run_analysis` saves final files by default for API callers,
 while stage-file saving defaults to off. Pass `save_final=False` for an
-in-memory run.
-Pass `redact_saved_quotes=True, save_intermediate=False` to remove explicit
-`excerpt` fields from saved JSON. This does not guarantee removal of quotations
-embedded in model-written descriptions; use in-memory mode when no local
-interview words may be retained. When enabled, files under
+in-memory run. Saved files keep verbatim excerpts. When enabled, files under
 `outputs/[session_name]/` are:
 
 - `00_final_results.json` and `00_summary.txt`: final result
 - `04_memos.md` and `04_memos.json`: why each theme holds those codes. Text between `[human]` markers is for the researcher and is not sent to the model
 - `04_memos_iter*.json`: the same memo at each generation or refinement pass
-- `05_codebook.md`: definition, inclusion, exclusion, and examples for each canonical code. Redacted saves omit excerpts
+- `05_codebook.md`: definition, inclusion, exclusion, and examples for each canonical code
 - `next_data_plan.md`: open questions grouped for the next round of data collection
 - `01_generation.json`: chunks and codes, only with `save_intermediate=True`
 - `02_evaluation_iter*.json`, `03_refinement_iter*.json`: iterative audit files, only with `save_intermediate=True`

@@ -743,11 +743,6 @@ def main() -> None:
             "保存本地结果", value=False, key="save_final", disabled=running,
             help="关闭时只在当前服务进程中保留结果；可手动下载 Word 或 JSON。",
         )
-        redact_saved_quotes = st.checkbox(
-            "本地结果移除逐字引文", value=False, key="redact_saved_quotes",
-            disabled=running or not save_final or save_intermediate,
-            help="移除 JSON 的 excerpt 字段；如需确保本地完全不保存访谈原话，请关闭所有本地保存。",
-        ) if save_final and not save_intermediate else False
         with st.expander("高级设置"):
             confidence_threshold = st.number_input(
                 "置信度阈值", min_value=0.05, max_value=1.0, value=0.7, step=0.05,
@@ -852,7 +847,6 @@ def main() -> None:
                     transcript=transcript,
                     save_intermediate=save_intermediate,
                     save_final=save_final,
-                    redact_saved_quotes=redact_saved_quotes,
                     before_model_call=checkpoint,
                     **({"case_id": case_id} if case_id.strip() else {}),
                 )

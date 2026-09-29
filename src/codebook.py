@@ -94,7 +94,7 @@ def semantic_merge(codes, groups):
     return codes
 
 
-def render_codebook(codes, include_excerpts=True) -> str:
+def render_codebook(codes) -> str:
     """Render one section per canonical code."""
     by_id = {code.get("code_id"): code for code in codes if isinstance(code.get("code_id"), int)}
     canonical = [code for code in codes if code.get("merged_into") is None]
@@ -113,7 +113,7 @@ def render_codebook(codes, include_excerpts=True) -> str:
         lines.append(f"- 定义：{code.get('definition') or '（尚未写定义）'}")
         lines.append(f"- 包含：{code.get('include') or '（尚未写）'}")
         lines.append(f"- 排除：{code.get('exclude') or '（尚未写）'}")
-        if include_excerpts and code.get("excerpt"):
+        if code.get("excerpt"):
             lines.append(f"- 正例：{code['excerpt']}")
         if code.get("source_start") is not None:
             lines.append(f"- 原文位置：{code['source_start']}–{code.get('source_end')}")
@@ -123,7 +123,7 @@ def render_codebook(codes, include_excerpts=True) -> str:
             for member_id in members:
                 member = by_id[member_id]
                 detail = member.get("description") or ""
-                if include_excerpts and member.get("excerpt"):
+                if member.get("excerpt"):
                     detail = f"{detail}｜{member['excerpt']}" if detail else member["excerpt"]
                 lines.append(f"  - [{member_id}] {detail}")
         lines.append("")

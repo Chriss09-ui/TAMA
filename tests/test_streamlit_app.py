@@ -276,12 +276,11 @@ class StreamlitAppTests(unittest.TestCase):
             transcript="一段测试访谈文本",
             save_intermediate=False,
             save_final=False,
-            redact_saved_quotes=False,
             before_model_call=ANY,
             case_id="Case-01",
         )
 
-    def test_focus_and_redacted_local_save_reach_framework(self):
+    def test_focus_and_local_save_reach_framework(self):
         result = {
             "session_name": "privacy", "accepted": True,
             "metadata": {"final_average_score": 4.0},
@@ -294,7 +293,6 @@ class StreamlitAppTests(unittest.TestCase):
             app.text_input(key="research_question").set_value("信息如何公开？").run()
             app.text_input(key="focus_areas").set_value("证据, 断点").run()
             app.checkbox(key="save_final").set_value(True).run()
-            app.checkbox(key="redact_saved_quotes").set_value(True).run()
             app.text_area(key="transcript_text").set_value("测试访谈").run()
             app.text_input(key="api_key_DeepSeek").set_value("test-key").run()
             app.button(key="run_analysis").click().run()
@@ -304,7 +302,6 @@ class StreamlitAppTests(unittest.TestCase):
         self.assertEqual(framework.call_args.kwargs["research_question"], "信息如何公开？")
         self.assertEqual(framework.call_args.kwargs["focus_areas"], ["证据", "断点"])
         self.assertTrue(framework.return_value.run_analysis.call_args.kwargs["save_final"])
-        self.assertTrue(framework.return_value.run_analysis.call_args.kwargs["redact_saved_quotes"])
 
     def test_deepseek_provider_passes_model_and_endpoint(self):
         result = {
@@ -343,7 +340,6 @@ class StreamlitAppTests(unittest.TestCase):
             transcript="一段测试访谈文本",
             save_intermediate=False,
             save_final=False,
-            redact_saved_quotes=False,
             before_model_call=ANY,
         )
 

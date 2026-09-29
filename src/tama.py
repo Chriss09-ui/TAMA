@@ -27,15 +27,6 @@ from reporting import render_summary_text
 from research_profile import resolve_profile
 
 
-def without_excerpts(value):
-    """Remove explicit verbatim excerpt fields from a persisted result."""
-    if isinstance(value, dict):
-        return {key: without_excerpts(item) for key, item in value.items() if key != "excerpt"}
-    if isinstance(value, list):
-        return [without_excerpts(item) for item in value]
-    return value
-
-
 def link_themes_to_codes(themes, codes):
     """Keep theme references tied to existing codes after model refinement."""
     code_by_id = {code.get("code_id"): code for code in codes if isinstance(code.get("code_id"), int)}
@@ -163,7 +154,6 @@ class TAMAFramework:
         before_model_call: Optional[Callable[[str], None]] = None,
         case_id: Optional[str] = None,
         save_final: bool = True,
-        redact_saved_quotes: bool = False,
     ) -> Dict[str, Any]:
         """
         Run complete TAMA analysis with iterative refinement.
@@ -175,14 +165,10 @@ class TAMAFramework:
             before_model_call: Optional checkpoint called before each model request
             case_id: Optional pseudonymous case identifier for research records
             save_final: Write final JSON and summary when true
-            redact_saved_quotes: Remove excerpt fields from saved JSON;
-                requires save_intermediate=False
 
         Returns:
             Dictionary containing final themes and analysis metadata
         """
-        if redact_saved_quotes and save_intermediate:
-            raise ValueError("脱敏保存时不能保存含逐字稿的阶段文件")
         if session_name is None:
             session_name = f"tama_session_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
         if os.path.basename(session_name) != session_name or session_name in (".", ".."):
@@ -348,7 +334,6 @@ class TAMAFramework:
                 "early_stop_patience": self.early_stop_patience,
                 "save_final": save_final,
                 "save_intermediate": save_intermediate,
-                "redact_saved_quotes": redact_saved_quotes,
             },
             "generation": {
                 "num_chunks": len(generation_result["chunks"]),
@@ -378,9 +363,8 @@ class TAMAFramework:
 
         if save_final:
             final_path = os.path.join(session_dir, "00_final_results.json")
-            persisted = without_excerpts(final_result) if redact_saved_quotes else final_result
             with open(final_path, 'w', encoding='utf-8') as f:
-                json.dump(persisted, f, indent=2, ensure_ascii=False)
+                json.dump(final_result, f, indent=2, ensure_ascii=False)
             print(f"\n✓ Final results saved to: {final_path}")
         print(f"\n  Total themes: {len(themes)}")
         print(f"  Final score: {evaluation_result['average_score']:.2f}/5.0")
@@ -388,10 +372,10 @@ class TAMAFramework:
         print(f"  Status: {stop_reason.upper()}")
 
         if save_final:
-            self._save_readable_summary(session_dir, persisted)
+            self._save_readable_summary(session_dir, final_result)
         if session_dir:
             self._write_research_records(
-                session_dir, memos, codes, final_result["next_data_plan"], redact_saved_quotes,
+                session_dir, memos, codes, final_result["next_data_plan"],
             )
 
         print("\n" + "=" * 80)
@@ -407,14 +391,14 @@ class TAMAFramework:
         with open(path, "w", encoding="utf-8") as handle:
             json.dump(memos_for_model(memos), handle, indent=2, ensure_ascii=False)
 
-    def _write_research_records(self, session_dir, memos, codes, plan, redact_saved_quotes):
+    def _write_research_records(self, session_dir, memos, codes, plan):
         memo_path = os.path.join(session_dir, "04_memos.md")
         with open(memo_path, "w", encoding="utf-8") as handle:
             handle.write(render_memos_markdown(memos))
         with open(os.path.join(session_dir, "04_memos.json"), "w", encoding="utf-8") as handle:
             json.dump(memos_for_model(memos), handle, indent=2, ensure_ascii=False)
         with open(os.path.join(session_dir, "05_codebook.md"), "w", encoding="utf-8") as handle:
-            handle.write(render_codebook(codes, include_excerpts=not redact_saved_quotes))
+            handle.write(render_codebook(codes))
         with open(os.path.join(session_dir, "next_data_plan.md"), "w", encoding="utf-8") as handle:
             handle.write(plan["markdown"])
         print(f"✓ Memos, codebook, and next-round plan saved to: {session_dir}")
