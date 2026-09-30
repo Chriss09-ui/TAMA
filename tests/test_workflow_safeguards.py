@@ -78,7 +78,7 @@ class WorkflowSafeguardTests(unittest.TestCase):
         first_prompt = agent.client.chat.completions.create.call_args_list[0].kwargs["messages"][1]["content"]
         self.assertNotIn('"code_id": 80', first_prompt)
 
-    def test_duplicate_code_labels_keep_both_source_ids(self):
+    def test_same_labels_reach_the_model_separately_without_implicit_theme_links(self):
         agent = GenerationAgent(api_key="test")
         agent.client = Mock()
         agent.client.chat.completions.create.return_value = response({
@@ -88,7 +88,10 @@ class WorkflowSafeguardTests(unittest.TestCase):
             Code(code_id=0, description="相同 编码", source_chunks=[0]),
             Code(code_id=1, description="相同编码", source_chunks=[1]),
         ])
-        self.assertEqual(themes[0].code_ids, [0, 1])
+        self.assertEqual(themes[0].code_ids, [0])
+        prompt = agent.client.chat.completions.create.call_args.kwargs["messages"][1]["content"]
+        self.assertIn('"code_id": 0', prompt)
+        self.assertIn('"code_id": 1', prompt)
 
     def test_malformed_model_json_fails_explicitly(self):
         agent = GenerationAgent(api_key="test")

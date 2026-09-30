@@ -39,6 +39,7 @@ from reflexivity import (
     save_reflexivity,
 )
 from reporting import report_lines
+from research_ui import research_inputs, render_research_tools
 
 def reflexivity_path() -> Path:
     override = os.environ.get("TAMA_REFLEXIVITY_PATH", "").strip()
@@ -319,21 +320,24 @@ def render_result(result: dict) -> None:
     st.caption("最近一次成功运行")
 
     status = {
-        "accepted": "达到评估标准", "no_improvement": "连续评估未提升，已早停",
-        "max_iterations": "已达到最大评估轮次",
-    }.get(result.get("stop_reason"), "达到评估标准" if result["accepted"] else "分析已结束")
+        "accepted": "本轮主题评估通过", "no_improvement": "本轮连续评估未提升，已停止自动修订",
+        "max_iterations": "本轮已达到最大评估轮次",
+    }.get(result.get("stop_reason"), "本轮主题评估通过" if result["accepted"] else "本轮自动处理结束")
     score = result["metadata"]["final_average_score"]
     themes = result["final_themes"]
     code_by_id = {code.get("code_id"): code for code in result.get("codes", [])}
 
-    st.success(f"分析完成 · {status}")
+    st.success(f"本轮处理完成 · {status}")
+    st.caption("自动处理结束与主题评分通过均不代表理论饱和。")
     score_col, theme_col = st.columns(2)
     score_col.metric("平均分", f"{score:.2f} / 5")
     theme_col.metric("主题数", len(themes))
     st.caption(f"评估轮次：{result['refinement_iterations']}")
-    storyline = result.get("generation", {}).get("analytic_storyline")
+    storyline = result.get("analytic_storyline") if "analytic_storyline" in result else result.get("generation", {}).get("analytic_storyline")
     if storyline:
-        st.write(f"初始主题故事线：{storyline}")
+        st.write(f"本轮主题故事线（草稿，模型所写）：{storyline}")
+    if result.get("storyline_needs_review"):
+        st.info("主题已经修订，模型未提供与最终主题对应的故事线；请在整体论证中重新核对。")
     scores = result.get("score_history") or []
     if scores:
         st.caption("各轮平均分：" + " → ".join(f"{item['average_score']:.2f}" for item in scores))
@@ -348,6 +352,7 @@ def render_result(result: dict) -> None:
             f"建议人工复核 {len(flagged_themes)} 个主题：{'、'.join(flagged_themes)}"
         )
 
+    render_research_tools(result, ROOT)
     st.subheader("保存结果")
     interpretations = [
         st.session_state.get(f"theme_interpretation_{index}", "")
@@ -426,6 +431,12 @@ def render_result(result: dict) -> None:
                             st.caption(f"定义：{code['definition']}")
                         if code.get("excerpt"):
                             st.write(f"原话：{code['excerpt']}")
+                        source = code.get("source") or {}
+                        if source:
+                            st.caption(f"来源：{source.get('source_id') or '未知'} · 参与者：{source.get('participant_id') or '未知'} · "
+                                       f"时间：{source.get('recorded_at') or '未知'} · 事件：{source.get('event_id') or '未知'}")
+                        if code.get("context"):
+                            st.text(code["context"])
                         st.caption(
                             f"{STATEMENT_TYPE_LABELS.get(code.get('statement_type'), '待判定')} · "
                             f"{VERIFICATION_LABELS.get(code.get('verification_status'), '尚未核实')}"
@@ -464,12 +475,17 @@ def render_result(result: dict) -> None:
             for code in canonical_codes:
                 label = code.get("name") or code.get("description")
                 st.markdown(f"**[{code.get('code_id', '?')}] {label}**")
+                st.caption(f"方法：{code.get('method') or '过程编码'}")
                 if code.get("definition"):
                     st.write(f"定义：{code['definition']}")
                 if code.get("include"):
                     st.write(f"包含：{code['include']}")
                 if code.get("exclude"):
                     st.write(f"排除：{code['exclude']}")
+                if code.get("related_code_ids"):
+                    st.caption(f"相关编码：{', '.join(map(str, code['related_code_ids']))}")
+                if code.get("note"):
+                    st.write(f"备注：{code['note']}")
                 if code.get("merged_from"):
                     st.caption(f"并入来源：{', '.join(map(str, code['merged_from']))}")
                 if code.get("excerpt"):
@@ -760,6 +776,7 @@ def main() -> None:
         "匿名案例编号（选填）", key="case_id", max_chars=80, disabled=running,
         help="例如 Case-01。编号会进入报告，不会作为文件夹名称。",
     )
+    research_options, research_error = research_inputs(st.session_state.get("analysis_result"), running)
     source = st.radio(
         "输入方式", ["粘贴文本", "上传文件"], horizontal=True,
         disabled=running,
@@ -814,6 +831,8 @@ def main() -> None:
         )
         if input_error:
             st.error(input_error)
+        elif research_error:
+            st.error(research_error)
         elif not transcript:
             st.error("请先粘贴访谈文本或上传 TXT/DOCX 文件。")
         elif connection_error:
@@ -828,6 +847,7 @@ def main() -> None:
                 )
 
             def run(checkpoint):
+                run_options = {key: value for key, value in research_options.items() if key != "analysis_mode"}
                 framework = TAMAFramework(
                     api_key=api_key,
                     model=api_model_name(provider, model),
@@ -842,6 +862,7 @@ def main() -> None:
                     profile=profile,
                     research_question=research_question,
                     focus_areas=[item.strip() for item in focus_text.replace("，", ",").split(",") if item.strip()] or None,
+                    **({"analysis_mode": research_options["analysis_mode"]} if "analysis_mode" in research_options else {}),
                 )
                 return framework.run_analysis(
                     transcript=transcript,
@@ -849,6 +870,7 @@ def main() -> None:
                     save_final=save_final,
                     before_model_call=checkpoint,
                     **({"case_id": case_id} if case_id.strip() else {}),
+                    **run_options,
                 )
 
             st.session_state.pop("analysis_result", None)

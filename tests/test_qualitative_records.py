@@ -8,8 +8,11 @@ from unittest.mock import Mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from agents.generation_agent import Code, GenerationAgent
+from agents.generation_agent import Chunk, Code, GenerationAgent
+from code_mapping import apply_related_codes, build_code_map, render_code_landscape
+from code_memos import code_memos_for_model, render_code_memos_markdown
 from codebook import exact_merge, render_codebook, semantic_merge
+from prompts import build_code_extraction_prompt
 from memos import (
     HUMAN_OPEN,
     apply_human_notes,
@@ -118,7 +121,7 @@ class CodebookTests(unittest.TestCase):
         self.assertIn("誊到 Excel", text)
         self.assertIn("第一次进公司", text)
 
-    def test_invalid_model_merge_keeps_exact_duplicates_only(self):
+    def test_invalid_model_merge_preserves_same_labels_at_different_positions(self):
         agent = GenerationAgent(api_key="test")
         agent.client = Mock()
         agent.client.chat.completions.create.return_value = SimpleNamespace(
@@ -130,11 +133,11 @@ class CodebookTests(unittest.TestCase):
             Code(code_id=2, description="另一件事", source_chunks=[1]),
         ]
         agent.consolidate_codebook(codes)
-        self.assertEqual(codes[1].merged_into, 0)
+        self.assertIsNone(codes[1].merged_into)
         self.assertIsNone(codes[2].merged_into)
         self.assertIn("无法使用", agent.codebook_note)
         prompt = agent.client.chat.completions.create.call_args.kwargs["messages"][1]["content"]
-        self.assertNotIn('"code_id": 1', prompt)
+        self.assertIn('"code_id": 1', prompt)
 
     def test_theme_expands_merged_code_ids_and_keeps_rationale(self):
         codes = [
@@ -166,6 +169,104 @@ class CodebookTests(unittest.TestCase):
         self.assertEqual(themes[0].code_ids, [0, 1])
         self.assertEqual(themes[0].rationale, "两句都是把客户原话搬进表格")
         self.assertIn("整理客户留言", agent.client.chat.completions.create.call_args.kwargs["messages"][1]["content"])
+
+
+class CodingCycleTests(unittest.TestCase):
+    def test_first_cycle_prompt_does_not_ask_for_a_definition(self):
+        prompt = build_code_extraction_prompt("一次访谈")
+        self.assertIn("不要写定义", prompt)
+        self.assertNotIn('"definition"', prompt)
+        self.assertNotIn('"include"', prompt)
+        self.assertNotIn('"exclude"', prompt)
+
+    def test_extracted_code_drops_a_premature_definition(self):
+        agent = GenerationAgent(api_key="test")
+        agent.client = Mock()
+        agent.client.chat.completions.create.return_value = response({
+            "codes": [{
+                "name": "有太多东西要了解",
+                "description": "有太多东西要了解",
+                "definition": "不该在第一轮写死",
+                "include": "不该写",
+                "exclude": "不该写",
+                "in_vivo": True,
+                "excerpt": "有太多东西要了解",
+            }],
+        })
+        codes = agent.generate_codes_from_chunk(Chunk(
+            chunk_id=0, text="有太多东西要了解", start_word=0, end_word=1,
+        ))
+        self.assertEqual(codes[0].definition, "")
+        self.assertEqual(codes[0].include, "")
+        self.assertEqual(codes[0].method, "实境编码")
+
+    def test_code_map_drops_unknown_ids_and_keeps_every_code(self):
+        codes = [
+            Code(code_id=0, description="少", name="少", source_chunks=[0], excerpt="一句"),
+            Code(code_id=1, description="多", name="多", source_chunks=[1], excerpt="二句"),
+            Code(code_id=2, description="并入", name="并入", source_chunks=[1], excerpt="三句", merged_into=1),
+        ]
+        codes[1].merged_from = [2]
+        code_map = build_code_map(codes, {
+            "categories": [
+                {"name": "不存在", "code_ids": [99]},
+                {"name": "先出现的一类", "code_ids": [0, 1], "memo": "这两件还不能当成同一件事"},
+            ],
+            "fewer_categories": [{"name": "更高一层", "code_ids": [0, 1]}],
+            "concepts": [{"name": "原话被挪走", "code_ids": [0, 1]}],
+        })
+        step2 = code_map["iterations"][1]
+        listed = [code_id for group in step2["groups"] for code_id in group["code_ids"]]
+        self.assertEqual(listed, [0, 1])
+        self.assertNotIn(99, listed)
+        self.assertIn("无法使用", code_map["note"])
+        apply_related_codes(codes, code_map)
+        self.assertEqual(codes[0].related_code_ids, [1])
+        self.assertEqual(codes[1].related_code_ids, [0])
+        landscape = render_code_landscape([code.model_dump() for code in codes], code_map)
+        self.assertIn("频次不是重要性", landscape)
+        self.assertLess(landscape.find("[0] 少"), landscape.find("[1] 多"))
+        self.assertIn("摘录 2 条", landscape)
+
+    def test_code_memo_keeps_the_researcher_note_out_of_the_model_view(self):
+        memos = [{
+            "date": "2026-09-29",
+            "source": "归并",
+            "subtitle": "整理客户留言",
+            "code_ids": [0, 1],
+            "text": "两句都是在搬原话",
+            "human_note": "我先不要下结论",
+        }]
+        markdown = render_code_memos_markdown(memos)
+        self.assertIn("我先不要下结论", markdown)
+        visible = json.dumps(code_memos_for_model(memos), ensure_ascii=False)
+        self.assertIn("两句都是在搬原话", visible)
+        self.assertNotIn("我先不要下结论", visible)
+        self.assertNotIn("human_note", visible)
+
+    def test_report_names_the_method_and_leaves_the_focus_sheet_blank(self):
+        result = {
+            "session_name": "cycle",
+            "accepted": False,
+            "metadata": {"final_average_score": 3},
+            "generation": {"analytic_storyline": "记录交上去之后不再被使用"},
+            "codes": [
+                {"code_id": 0, "description": "少", "name": "少", "excerpt": "一句", "method": "过程编码"},
+            ],
+            "final_themes": [{
+                "name": "记录无人再看",
+                "description": "交上去的记录很少被使用。",
+                "code_ids": [0],
+                "counterexample_code_ids": [],
+            }],
+        }
+        lines = "\n".join(text for _kind, text in report_lines(result))
+        self.assertIn("过程编码", lines)
+        self.assertIn("本轮主题故事线（草稿，模型所写）", lines)
+        self.assertIn("聚焦", lines)
+        self.assertIn("模型不写、也不读取", lines)
+        self.assertIn("（请填写）", lines)
+        self.assertIn("频次不是重要性", lines)
 
 
 class ReportAndPlanTests(unittest.TestCase):

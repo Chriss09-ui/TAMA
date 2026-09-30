@@ -13,7 +13,7 @@ def classify_question(text: str) -> str:
     return "需核对信息"
 
 
-def build_next_data_plan(codes, themes, memos) -> dict:
+def build_next_data_plan(codes, themes, memos, workspace=None) -> dict:
     """Group unresolved questions. Nothing already recorded is dropped."""
     items = []
     seen = set()
@@ -43,14 +43,18 @@ def build_next_data_plan(codes, themes, memos) -> dict:
             )
     for memo in memos or []:
         add(memo.get("uncertain"), f"备忘录 {memo.get('theme')}")
+    for comparison in (workspace or {}).get("comparisons") or []:
+        add(comparison.get("open_question"), f"比较 {comparison.get('code_ids')}")
 
     groups = {name: [] for name in GROUP_ORDER}
     for item in items:
         groups[item["group"]].append(item["text"])
-    return {"groups": groups, "items": items, "markdown": render_next_data_plan(groups)}
+    tasks = (workspace or {}).get("sampling_tasks") or []
+    return {"groups": groups, "items": items, "tasks": tasks,
+            "markdown": render_next_data_plan(groups, tasks)}
 
 
-def render_next_data_plan(groups) -> str:
+def render_next_data_plan(groups, tasks=None) -> str:
     lines = [
         "# 下一轮可以收集什么",
         "",
@@ -66,4 +70,11 @@ def render_next_data_plan(groups) -> str:
         else:
             lines.extend(f"- {entry}" for entry in entries)
         lines.append("")
+    for task in tasks or []:
+        lines.extend([f"## {task['kind']}：{task['target']}", "",
+                      f"- 类属：{task.get('category_id') or '未关联'}",
+                      f"- 缺口：{task['gap']}", f"- 不同解释：{task.get('alternatives') or '待明确'}",
+                      f"- 选择理由：{task['rationale']}", f"- 开放追问：{task.get('questions') or '待填写'}",
+                      f"- 预期改变：{task.get('expected_change') or '一般核查，不推定理论目的'}",
+                      f"- 状态：{task['status']}；分析后果：{task.get('outcome') or '尚未回填'}", ""])
     return "\n".join(lines).rstrip() + "\n"

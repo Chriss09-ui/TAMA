@@ -1,7 +1,15 @@
 """Research-report text shared by the Word download and the text summary."""
 
+from code_mapping import render_code_landscape
 from next_data_plan import build_next_data_plan
 from reflexivity import REFLEXIVITY_CHECKS, REFLEXIVITY_FIELDS
+from research_records import render_research_records
+
+CODING_METHODS_NOTE = (
+    "编码方法：第一轮用过程编码，名称是过程性短语；直接采用受访者原话或隐喻的，标为实境编码。"
+    "接着做同义归并，这时才写定义、包含和排除。再做代码映射（代码全集、类别、更少的类别、概念），然后归纳主题。"
+    "设计依据仍是《质性研究入门指南》。这一段只说明这次用了哪些编码操作。"
+)
 
 
 KIND_LABELS = {
@@ -65,6 +73,8 @@ def _take_quotes(code_ids, code_by_id, used, limit):
             "definition": code.get("definition") or "",
             "statement_type": code.get("statement_type") or "",
             "verification_status": code.get("verification_status") or "",
+            "source": code.get("source") or {},
+            "speaker": code.get("speaker") or "",
         })
         used.add(excerpt)
     return taken
@@ -114,6 +124,7 @@ def assign_theme_quotes(result):
             "uncertain": theme.get("uncertain") or "",
             "code_ids": list(theme.get("code_ids") or []),
             "plain_codes": [str(code) for code in theme.get("codes") or []],
+            "category_names": list(theme.get("category_names") or []),
         }
         packs.append(pack)
     fixed_length = 480
@@ -143,7 +154,12 @@ def _quote_line(quote) -> str:
     verification = VERIFICATION_LABELS.get(quote.get("verification_status"), "")
     label = quote.get("description") or "未命名编码"
     detail = f"{speaker}；{verification}" if verification else speaker
-    return f"「{quote['excerpt']}」（{detail}；编码 [{quote['code_id']}] {label}）"
+    source = quote.get("source") or {}
+    context = ""
+    if source.get("source_id"):
+        context = (f"；来源 {source['source_id']}；参与者 {source.get('participant_id') or '未知'}；"
+                   f"时间 {source.get('recorded_at') or '未知'}；事件 {source.get('event_id') or '未知'}")
+    return f"「{quote['excerpt']}」（{detail}；编码 [{quote['code_id']}] {label}{context}）"
 
 
 def _reflexivity_lines(reflexivity):
@@ -173,6 +189,8 @@ def _theme_lines(result, packs, interpretations):
         lines.append(("h2", f"{index}. {pack['name']}"))
         kind = KIND_LABELS.get(pack["kind"], "待分类")
         lines.append(("p", f"类型：{kind}"))
+        if pack.get("category_names"):
+            lines.append(("p", f"来自类别：{'、'.join(pack['category_names'])}"))
         if pack["description"]:
             lines.append(("p", pack["description"]))
         if pack["rationale"]:
@@ -233,7 +251,13 @@ def _codebook_lines(result):
     for code in codes:
         label = code.get("name") or code.get("description")
         lines.append(("h2", f"[{code.get('code_id')}] {label}"))
+        lines.append(("p", f"方法：{code.get('method') or '过程编码'}"))
         lines.append(("p", f"定义：{code.get('definition') or '（尚未写定义）'}"))
+        related = [code_id for code_id in code.get("related_code_ids") or [] if isinstance(code_id, int)]
+        if related:
+            lines.append(("p", f"相关编码：{', '.join(map(str, related))}"))
+        if str(code.get("note") or "").strip():
+            lines.append(("p", f"备注：{code['note']}"))
         lines.append(("p", f"包含：{code.get('include') or '（尚未写）'}"))
         lines.append(("p", f"排除：{code.get('exclude') or '（尚未写）'}"))
         if code.get("source_start") is not None:
@@ -261,6 +285,40 @@ def _plan_lines(result):
             continue
         lines.append(("h2", name))
         lines.extend(("bullet", entry) for entry in entries)
+    for retired in result.get("retired_findings") or []:
+        theme = retired["theme"]
+        lines.append(("h2", f"未纳入最终主题但保留的线索：{theme['name']}"))
+        lines.append(("p", f"移出理由：{retired['reason']}；反例编码：{theme.get('counterexample_code_ids') or []}"))
+    return lines
+
+
+def _focus_lines():
+    return [
+        ("h1", "聚焦"),
+        ("p", "这一节留给研究者。模型不写、也不读取。"),
+        ("p", "这次最想留下的主题（以下三处是写作提示，可按研究实际增减）："),
+        ("p", "1. （请填写）"),
+        ("p", "2. （请填写）"),
+        ("p", "3. （请填写）"),
+        ("p", "一句论断：（请写一句可能还需要修改的话。）"),
+        ("p", "支持这句论断的编码：（请填写编号）"),
+        ("p", "不支持这句论断的编码：（请填写编号）"),
+    ]
+
+
+def _landscape_lines(result):
+    code_map = result.get("code_map") or (result.get("generation") or {}).get("code_map")
+    text = render_code_landscape(result.get("codes"), code_map)
+    lines = []
+    for raw in text.splitlines():
+        if raw.startswith("# "):
+            lines.append(("h1", raw[2:].strip()))
+        elif raw.startswith("- "):
+            lines.append(("bullet", raw[2:].strip()))
+        elif raw.startswith("  - "):
+            lines.append(("bullet", raw[4:].strip()))
+        elif raw.strip():
+            lines.append(("p", raw.strip()))
     return lines
 
 
@@ -281,7 +339,7 @@ def _closing_lines(result):
 
 def report_lines(result, reflexivity=None, interpretations=None):
     """Return ordered report blocks as (kind, text)."""
-    status = "达到评估标准" if result.get("accepted") else "分析已结束"
+    status = "本轮主题评估通过" if result.get("accepted") else "本轮自动处理结束"
     score = (result.get("metadata") or {}).get("final_average_score")
     lines = [
         ("title", "访谈质性分析报告"),
@@ -300,9 +358,13 @@ def report_lines(result, reflexivity=None, interpretations=None):
     if result.get("refinement_iterations") is not None:
         lines.append(("p", f"评估轮次：{result['refinement_iterations']}"))
     lines.append(("p", "分数衡量主题是否像一个有证据的模式。候选机制和诠释仍要由研究者自己写、自己判断。"))
-    storyline = (result.get("generation") or {}).get("analytic_storyline")
+    lines.append(("p", "本轮处理结束不代表理论饱和；类属充分性须附研究者的比较和判断依据。"))
+    lines.append(("p", CODING_METHODS_NOTE))
+    storyline = result.get("analytic_storyline") if "analytic_storyline" in result else (result.get("generation") or {}).get("analytic_storyline")
     if storyline:
-        lines.append(("p", f"初始主题故事线：{storyline}"))
+        lines.append(("p", f"本轮主题故事线（草稿，模型所写）：{storyline}"))
+    if result.get("storyline_needs_review"):
+        lines.append(("p", "主题已经修订，尚无与最终主题对应的故事线；请研究者重新核对整体论证。"))
     note = (result.get("generation") or {}).get("codebook_note")
     if note:
         lines.append(("p", note))
@@ -316,8 +378,20 @@ def report_lines(result, reflexivity=None, interpretations=None):
         lines.append(("p", f"建议人工复核（{len(flagged)}）：{'、'.join(flagged)}"))
     packs = assign_theme_quotes(result)
     lines.extend(_theme_lines(result, packs, interpretations))
+    lines.extend(_focus_lines())
+    lines.extend(_landscape_lines(result))
     lines.extend(_plan_lines(result))
     lines.extend(_codebook_lines(result))
+    if result.get("research_workspace"):
+        for raw in render_research_records(result["research_workspace"]).splitlines():
+            if raw.startswith("# "):
+                lines.append(("h1", raw[2:]))
+            elif raw.startswith("## "):
+                lines.append(("h2", raw[3:]))
+            elif raw.startswith("- "):
+                lines.append(("bullet", raw[2:]))
+            elif raw.strip():
+                lines.append(("p", raw))
     lines.extend(_closing_lines(result))
     return lines
 

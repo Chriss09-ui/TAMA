@@ -1,6 +1,7 @@
 """Codebook merge and the readable codebook export."""
 
 import re
+from datetime import datetime, timezone
 
 
 def _label_key(code) -> str | None:
@@ -11,13 +12,19 @@ def _label_key(code) -> str | None:
 
 
 def exact_merge(codes):
-    """Collapse codes whose labels match once whitespace is removed."""
+    """Deduplicate the same evidence; identical labels alone do not mean synonyms."""
     groups = {}
     for code in codes:
         key = _label_key(code)
-        if key is None:
+        source = getattr(code, "source", None)
+        source_id = getattr(source, "source_id", "")
+        if key is None or not code.excerpt or not source_id or code.source_start is None:
             continue
-        groups.setdefault(key, []).append(code)
+        if code.merged_into is not None or code.separate_from or code.definition_locked:
+            continue
+        evidence_key = (key, source_id, code.source_start, code.source_end, code.excerpt,
+                        getattr(code, "context", ""), code.statement_type)
+        groups.setdefault(evidence_key, []).append(code)
     for group in groups.values():
         if len(group) < 2:
             continue
@@ -36,17 +43,41 @@ def _truthy(value) -> bool:
     return value in (True, "true", "True", "yes", "是")
 
 
-def _apply_label(code, group) -> None:
-    name = str(group.get("name") or "").strip()
-    if name:
-        code.name = name
-        code.description = name
-    for field in ("definition", "include", "exclude"):
-        value = str(group.get(field) or "").strip()
+def revise_definition(code, values, reason, author="模型建议") -> None:
+    fields = ("name", "description", "definition", "include", "exclude")
+    before = {field: getattr(code, field) for field in fields}
+    for field in fields:
+        value = str(values.get(field) or "").strip()
         if value:
             setattr(code, field, value)
-    if _truthy(group.get("in_vivo")):
+    after = {field: getattr(code, field) for field in fields}
+    if before != after:
+        code.definition_history.append({
+            "date": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "before": before, "after": after, "reason": reason, "author": author,
+        })
+        code.version += 1
+        code.definition_review = "需复核"
+        code.review_note = "定义或标签已改变，请回查原摘录与语境。"
+
+
+def _apply_label(code, group) -> None:
+    values = {}
+    name = str(group.get("name") or "").strip()
+    if name:
+        values.update(name=name, description=name)
+    for field in ("definition", "include", "exclude"):
+        value = str(group.get(field) or "").strip()
+        if value and not getattr(code, "definition_locked", False):
+            values[field] = value
+    revise_definition(code, values, str(group.get("merge_rationale") or "归并后补充或修订编码定义"))
+    note = str(group.get("note") or "").strip()
+    if note:
+        code.note = note
+    if _truthy(group.get("in_vivo")) or code.in_vivo:
         code.in_vivo = True
+        if hasattr(code, "method"):
+            code.method = "实境编码"
 
 
 def semantic_merge(codes, groups):
@@ -62,15 +93,34 @@ def semantic_merge(codes, groups):
         if not isinstance(raw_ids, list) or not raw_ids:
             continue
         ids = list(dict.fromkeys(raw_ids))
-        if not all(isinstance(code_id, int) and code_id in active for code_id in ids):
+        if not all(type(code_id) is int and code_id in active for code_id in ids):
             raise ValueError("编码归并结果无法使用")
         if any(code_id in seen for code_id in ids):
             raise ValueError("编码归并结果无法使用")
+        if any(set(by_id[code_id].separate_from).intersection(ids) for code_id in ids):
+            raise ValueError("归并违反了研究者已确认的保持分开决定")
+        locked = [by_id[code_id] for code_id in ids if by_id[code_id].definition_locked]
+        if locked and len(ids) > 1:
+            raise ValueError("研究者修改的定义需要复核，不能在本轮自动归并")
         seen.extend(ids)
         parsed.append((ids, group))
     for ids, group in parsed:
+        reviews = {item.get("code_id"): item for item in group.get("evidence_reviews") or []
+                   if isinstance(item, dict) and isinstance(item.get("code_id"), int)}
+        rejected = [code_id for code_id in ids if reviews.get(code_id, {}).get("status") == "does_not_fit"]
+        for code_id in rejected:
+            by_id[code_id].definition_review = "需复核"
+            by_id[code_id].review_note = str(reviews[code_id].get("reason") or "该摘录不适用候选定义，已保持独立。")
+        ids = [code_id for code_id in ids if code_id not in rejected]
+        if not ids:
+            continue
         if len(ids) == 1:
+            old_version = by_id[ids[0]].version
             _apply_label(by_id[ids[0]], group)
+            if by_id[ids[0]].version != old_version:
+                for child_id in by_id[ids[0]].merged_from:
+                    by_id[child_id].definition_review = "需复核"
+                    by_id[child_id].review_note = "规范编码定义已改变，请回查这一条原始摘录。"
             continue
         example = group.get("example_code_id")
         canonical_id = example if example in ids else min(ids)
@@ -91,6 +141,11 @@ def semantic_merge(codes, groups):
         canonical.merged_from = list(dict.fromkeys(inherited))
         canonical.version = max(canonical.version, 2)
         _apply_label(canonical, group)
+        for member_id in [canonical_id, *canonical.merged_from]:
+            member = by_id[member_id]
+            member.definition_review = "需复核"
+            member.review_note = str(reviews.get(member_id, {}).get("reason") or
+                                    "归并定义需与这条原始摘录及语境重新比较。")
     return codes
 
 
@@ -109,10 +164,26 @@ def render_codebook(codes) -> str:
         if code.get("in_vivo"):
             lines.append("（内生编码：名称来自材料中的原话或隐喻）")
             lines.append("")
+        lines.append(f"- 方法：{code.get('method') or '过程编码'}")
         lines.append(f"- 版本：{code.get('version') or 1}")
         lines.append(f"- 定义：{code.get('definition') or '（尚未写定义）'}")
         lines.append(f"- 包含：{code.get('include') or '（尚未写）'}")
         lines.append(f"- 排除：{code.get('exclude') or '（尚未写）'}")
+        lines.append(f"- 定义复核：{code.get('definition_review') or '未复核'}；{code.get('review_note') or ''}")
+        source = code.get("source") or {}
+        if source.get("source_id"):
+            lines.append(f"- 来源：{source['source_id']}；参与者：{source.get('participant_id') or '未知'}；"
+                         f"时间：{source.get('recorded_at') or '未知'}；事件：{source.get('event_id') or '未知'}")
+        if code.get("context"):
+            lines.append(f"- 相邻语境：{code['context']}")
+        for change in code.get("definition_history") or []:
+            lines.append(f"- 定义变更（{change.get('date')}）：{change.get('before')} → {change.get('after')}；"
+                         f"理由：{change.get('reason')}；记录者：{change.get('author')}")
+        related = [code_id for code_id in code.get("related_code_ids") or [] if isinstance(code_id, int)]
+        if related:
+            lines.append(f"- 相关编码：{', '.join(map(str, related))}")
+        if str(code.get("note") or "").strip():
+            lines.append(f"- 备注：{code['note']}")
         if code.get("excerpt"):
             lines.append(f"- 正例：{code['excerpt']}")
         if code.get("source_start") is not None:

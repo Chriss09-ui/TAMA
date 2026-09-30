@@ -28,6 +28,7 @@ class RefinementPlan(BaseModel):
     """Plan of refinement operations to perform."""
     operations: List[RefinementOperation]
     summary: str
+    analytic_storyline: str = ""
 
 
 class RefinementAgent:
@@ -81,6 +82,8 @@ class RefinementAgent:
             codes=[{
                 "code_id": code.get("code_id"), "description": code.get("description"),
                 "excerpt": str(code.get("excerpt") or "")[:120],
+                "context": code.get("context") or "",
+                "source": code.get("source") or {},
             } for code in codes],
             study=self.study,
             memos=memos,
@@ -111,7 +114,8 @@ class RefinementAgent:
 
         return RefinementPlan(
             operations=operations,
-            summary=result["summary"]
+            summary=result["summary"],
+            analytic_storyline=result.get("analytic_storyline") or "",
         )
 
     def apply_refinement_plan(
@@ -130,6 +134,7 @@ class RefinementAgent:
             Refined list of themes
         """
         refined_themes = themes.copy()
+        original_by_name = {theme["name"]: theme for theme in themes}
 
         for operation in plan.operations:
             if operation.operation in ("add", "split", "combine") and not (
@@ -140,6 +145,17 @@ class RefinementAgent:
                 raise ValueError("split operation requires one target theme")
             if operation.operation == "combine" and len(operation.target_themes) < 2:
                 raise ValueError("combine operation requires at least two target themes")
+            if operation.new_theme is not None:
+                parents = [original_by_name[name] for name in operation.target_themes if name in original_by_name]
+                counters = list(operation.new_theme.get("counterexample_code_ids") or [])
+                questions = list(operation.new_theme.get("open_questions") or [])
+                for parent in parents:
+                    counters.extend(parent.get("counterexample_code_ids") or [])
+                    questions.extend(parent.get("open_questions") or [])
+                    if parent.get("uncertain"):
+                        questions.append(parent["uncertain"])
+                operation.new_theme["counterexample_code_ids"] = list(dict.fromkeys(counters))
+                operation.new_theme["open_questions"] = list(dict.fromkeys(questions))
             if operation.operation == "delete":
                 refined_themes = self._apply_delete(refined_themes, operation)
             elif operation.operation == "combine":
@@ -260,6 +276,7 @@ class RefinementAgent:
             "theme_count_before": len(themes),
             "theme_count_after": len(refined_themes)
         }
+        result["analytic_storyline"] = plan.analytic_storyline
 
         # Save refinement results if path provided
         if save_path:

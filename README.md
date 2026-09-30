@@ -11,6 +11,31 @@ This repository implements a human–AI workflow for qualitative interview analy
 
 ## Quick Start
 
+### Continuing a study
+
+The input section's **来源与持续研究** panel records source context and can
+continue the current result or import an earlier complete JSON result. New
+codes keep distinct source identities and receive IDs after the previous
+round's IDs. Identical labels no longer cause automatic merging of distinct
+evidence; merge prompts compare the original excerpts and context.
+
+Select **建构扎根理论支持** to work with researcher-selected focused codes,
+category properties and boundaries, theoretical sampling tasks, category
+sufficiency judgements, relationships, arguments, and the four study review
+criteria. Comparisons and analytic decisions are also available in the default
+thematic workflow. Saving records does not call the model. Only decisions
+explicitly selected and confirmed for a subsequent round enter its prompts;
+private memos and reflexivity remain separate.
+
+Complete JSON and Word downloads include the research records. With local
+saving enabled, `08_research_records.md` accompanies the result, and editor
+saves update the local JSON, codebook, next-data plan, and summary. Theme
+scores and processing completion do not determine theoretical saturation.
+
+The methodological mapping and the archived assessment are in
+[建构扎根理论对照](建构扎根理论对照/README.md), alongside the existing
+[编码手册对照](编码手册对照/项目如何符合编码手册.md).
+
 **Get started in 5 minutes!** See [QUICKSTART.md](QUICKSTART.md) for detailed instructions.
 
 ```bash
@@ -269,8 +294,11 @@ in-memory run. Saved files keep verbatim excerpts. When enabled, files under
 
 - `00_final_results.json` and `00_summary.txt`: final result
 - `04_memos.md` and `04_memos.json`: why each theme holds those codes. Text between `[human]` markers is for the researcher and is not sent to the model
-- `04_memos_iter*.json`: the same memo at each generation or refinement pass
-- `05_codebook.md`: definition, inclusion, exclusion, and examples for each canonical code
+- `04_code_memos.md`: code-level memos written before themes. Researcher notes in the same markers are not sent to the model
+- `04_memos_iter*.json`: the same theme memo at each generation or refinement pass
+- `05_codebook.md`: method, definition, inclusion, exclusion, related codes, notes, and examples for each canonical code
+- `06_code_map.md`: four archived steps from the full code list to categories and concepts
+- `07_code_landscape.md`: outline of canonical codes with excerpt counts. Counts are not importance
 - `next_data_plan.md`: open questions grouped for the next round of data collection
 - `01_generation.json`: chunks and codes, only with `save_intermediate=True`
 - `02_evaluation_iter*.json`, `03_refinement_iter*.json`: iterative audit files, only with `save_intermediate=True`
@@ -283,7 +311,7 @@ already exists receives a suffix instead of overwriting an earlier run.
 ### 1. Generation Agent
 - **Chunking**: Dynamically sizes model windows and preserves natural transcript boundaries
 - **Coding**: Extracts codes (<25 words) from each chunk
-- **Theme Generation**: Collapses identical labels, synthesizes at most 40 distinct codes per batch, then consolidates candidate themes and records an initial analytic storyline
+- **Theme Generation**: Collapses identical labels, writes definitions at that merge, maps codes into categories, synthesizes at most 40 distinct codes per batch, then consolidates candidate themes and records a draft analytic storyline
 
 ### 2. Evaluation Agent
 Evaluates themes using four criteria:

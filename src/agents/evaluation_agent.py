@@ -160,7 +160,7 @@ class EvaluationAgent:
 
     @staticmethod
     def _compact_codes(theme, codes):
-        linked = set(theme.get("code_ids") or [])
+        linked = set([*(theme.get("code_ids") or []), *(theme.get("counterexample_code_ids") or [])])
         return [
             {
                 "description": code.get("description"),
@@ -170,6 +170,8 @@ class EvaluationAgent:
                 **({"statement_type": code.get("statement_type")} if code.get("code_id") in linked and code.get("statement_type") else {}),
                 **({"focus": code.get("focus")} if code.get("code_id") in linked and code.get("focus") else {}),
                 **({"open_question": code.get("open_question")} if code.get("code_id") in linked and code.get("open_question") else {}),
+                **({"source": code.get("source") or {}, "context": code.get("context") or ""}
+                   if code.get("code_id") in linked else {}),
             }
             for code in codes
         ]

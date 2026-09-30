@@ -8,11 +8,14 @@ from typing import Dict, Any, Optional, Callable
 from datetime import datetime
 import json
 import uuid
+from dataclasses import replace
 
 from agents.generation_agent import GenerationAgent
 from agents.evaluation_agent import EvaluationAgent
 from agents.refinement_agent import RefinementAgent
 from chunking import ChunkStrategy, resolve_chunk_strategy
+from code_mapping import attach_category_names, render_code_landscape, render_code_map
+from code_memos import render_code_memos_markdown
 from codebook import render_codebook
 from decisions.base import DecisionProvider
 from memos import (
@@ -25,6 +28,10 @@ from next_data_plan import build_next_data_plan
 from prompts import ENTERPRISE_CRITERIA
 from reporting import render_summary_text
 from research_profile import resolve_profile
+from research_records import (
+    AnalyticDecision, SourceMetadata, build_workspace, continuation_context,
+    decisions_for_model, prepare_previous_result, render_research_records,
+)
 
 
 def link_themes_to_codes(themes, codes):
@@ -84,6 +91,7 @@ class TAMAFramework:
         research_question: str = "",
         focus_areas: Optional[list[str]] = None,
         early_stop_patience: int = 2,
+        analysis_mode: str = "thematic",
     ):
         """
         Initialize TAMA Framework.
@@ -119,7 +127,9 @@ class TAMAFramework:
         self.max_workers = max_workers
         self.decision_provider = decision_provider
         self.confidence_threshold = confidence_threshold
-        self.study = resolve_profile(profile, research_question, focus_areas)
+        if analysis_mode not in ("thematic", "grounded_theory"):
+            raise ValueError("Unknown analysis mode")
+        self.study = replace(resolve_profile(profile, research_question, focus_areas), analysis_mode=analysis_mode)
         if early_stop_patience < 1:
             raise ValueError("early_stop_patience must be positive")
         self.early_stop_patience = early_stop_patience
@@ -154,6 +164,10 @@ class TAMAFramework:
         before_model_call: Optional[Callable[[str], None]] = None,
         case_id: Optional[str] = None,
         save_final: bool = True,
+        source_metadata: Optional[Dict[str, Any]] = None,
+        previous_result: Optional[Dict[str, Any]] = None,
+        confirmed_decisions: Optional[list[dict]] = None,
+        include_previous_context: bool = False,
     ) -> Dict[str, Any]:
         """
         Run complete TAMA analysis with iterative refinement.
@@ -173,6 +187,27 @@ class TAMAFramework:
             session_name = f"tama_session_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
         if os.path.basename(session_name) != session_name or session_name in (".", ".."):
             raise ValueError("session_name must be a single directory name")
+
+        previous_codes, previous_workspace = [], None
+        if previous_result is not None:
+            previous_codes, previous_workspace = prepare_previous_result(previous_result)
+        decisions = [AnalyticDecision.model_validate(item).model_dump() for item in confirmed_decisions or []]
+        prior_ids = {code["code_id"] for code in previous_codes}
+        if any(code_id not in prior_ids for decision in decisions for code_id in decision["code_ids"]):
+            raise ValueError("分析决定只能引用已载入的前轮编码")
+        source = SourceMetadata.model_validate(source_metadata or {})
+        if case_id and not source.case_id:
+            source.case_id = case_id.strip()
+        source.source_id = source.source_id or uuid.uuid4().hex
+        if any((code.get("source") or {}).get("source_id") == source.source_id for code in previous_codes):
+            raise ValueError("新资料编号与前轮重复，请为这份新资料使用独立编号")
+        current_study = replace(
+            self.study, confirmed_decisions=decisions_for_model(decisions),
+            previous_analytic_context=continuation_context(previous_workspace)
+                if previous_workspace is not None and include_previous_context else "",
+        )
+        for agent in (self.generation_agent, self.evaluation_agent, self.refinement_agent):
+            agent.study = current_study
 
         self.generation_agent.before_model_call = before_model_call
         self.evaluation_agent.before_model_call = before_model_call
@@ -201,10 +236,16 @@ class TAMAFramework:
         print("=" * 80)
 
         generation_path = os.path.join(session_dir, "01_generation.json") if save_intermediate else None
-        generation_result = self.generation_agent.run(transcript, save_path=generation_path)
+        generation_result = self.generation_agent.run(
+            transcript, save_path=generation_path, source_metadata=source.model_dump(),
+            previous_codes=previous_codes, confirmed_decisions=decisions,
+        )
+        current_storyline = generation_result.get("analytic_storyline") or ""
 
         themes = link_themes_to_codes(generation_result["themes"], generation_result["codes"])
         codes = generation_result["codes"]
+        code_map = generation_result.get("code_map")
+        themes = attach_category_names(themes, codes, code_map)
         memos = build_theme_memos(themes, iteration=0)
         self._write_memo_iteration(session_dir, memos, 0)
 
@@ -216,6 +257,7 @@ class TAMAFramework:
         best_score = float("-inf")
         stagnant_rounds = 0
         stop_reason = "max_iterations"
+        retired_findings = []
 
         while not is_acceptable and iteration < self.max_iterations:
             iteration += 1
@@ -258,7 +300,7 @@ class TAMAFramework:
             # If acceptable or max iterations reached, stop
             if is_acceptable:
                 stop_reason = "accepted"
-                print("\n✓ Themes are acceptable! Analysis complete.")
+                print("\n✓ This round's themes meet the evaluation criteria.")
                 break
 
             if stagnant_rounds >= self.early_stop_patience:
@@ -288,9 +330,21 @@ class TAMAFramework:
                 save_path=refinement_path,
                 memos=memos_for_model(memos),
             )
+            old_by_name = {theme["name"]: theme for theme in themes}
+            for operation in refinement_result.get("refinement_plan", {}).get("operations") or []:
+                if operation.get("operation") == "delete":
+                    for name in operation.get("target_themes") or []:
+                        old = old_by_name.get(name)
+                        if old and (old.get("counterexample_code_ids") or old.get("open_questions") or old.get("uncertain")
+                                    or old.get("kind") in ("counterexample", "evidence_gap")):
+                            retired_findings.append({"theme": old, "reason": operation.get("rationale") or "",
+                                                     "iteration": iteration})
+            if refinement_result.get("refined_themes") != themes:
+                current_storyline = refinement_result.get("analytic_storyline") or ""
 
             # Update themes for next iteration
             themes = link_themes_to_codes(refinement_result["refined_themes"], codes)
+            themes = attach_category_names(themes, codes, code_map)
             attach_operation_rationales(
                 themes, refinement_result.get("refinement_plan", {}).get("operations"),
             )
@@ -334,6 +388,7 @@ class TAMAFramework:
                 "early_stop_patience": self.early_stop_patience,
                 "save_final": save_final,
                 "save_intermediate": save_intermediate,
+                "analysis_mode": self.study.analysis_mode,
             },
             "generation": {
                 "num_chunks": len(generation_result["chunks"]),
@@ -342,7 +397,10 @@ class TAMAFramework:
                 "chunking": generation_result.get("chunking"),
                 "analytic_storyline": generation_result.get("analytic_storyline", ""),
                 "codebook_note": generation_result.get("codebook_note", ""),
+                "code_map": code_map,
             },
+            "code_map": code_map,
+            "code_memos": generation_result.get("code_memos") or [],
             "refinement_iterations": iteration,
             "score_history": score_history,
             "stop_reason": stop_reason,
@@ -351,6 +409,12 @@ class TAMAFramework:
             "final_themes": themes,
             "memos": memos,
             "next_data_plan": build_next_data_plan(codes, themes, memos),
+            "analytic_storyline": current_storyline,
+            "storyline_needs_review": bool(refinement_history) and not bool(current_storyline),
+            "retired_findings": retired_findings,
+            "research_workspace": build_workspace(
+                codes, code_map, session_name, source, previous_workspace, decisions,
+            ),
             "final_evaluation": evaluation_result,
             "accepted": is_acceptable,
             "metadata": {
@@ -358,6 +422,10 @@ class TAMAFramework:
                 "final_average_score": evaluation_result["average_score"]
             }
         }
+        final_result["next_data_plan"] = build_next_data_plan(
+            codes, [*themes, *(item["theme"] for item in retired_findings)], memos,
+            final_result["research_workspace"],
+        )
         if session_dir:
             final_result["output_dir"] = session_dir
 
@@ -374,9 +442,7 @@ class TAMAFramework:
         if save_final:
             self._save_readable_summary(session_dir, final_result)
         if session_dir:
-            self._write_research_records(
-                session_dir, memos, codes, final_result["next_data_plan"],
-            )
+            self._write_research_records(session_dir, final_result)
 
         print("\n" + "=" * 80)
         print("TAMA ANALYSIS COMPLETE")
@@ -391,17 +457,29 @@ class TAMAFramework:
         with open(path, "w", encoding="utf-8") as handle:
             json.dump(memos_for_model(memos), handle, indent=2, ensure_ascii=False)
 
-    def _write_research_records(self, session_dir, memos, codes, plan):
+    def _write_research_records(self, session_dir, result):
+        memos = result.get("memos") or []
+        codes = result.get("codes") or []
+        plan = result.get("next_data_plan") or {}
+        code_map = result.get("code_map")
         memo_path = os.path.join(session_dir, "04_memos.md")
         with open(memo_path, "w", encoding="utf-8") as handle:
             handle.write(render_memos_markdown(memos))
         with open(os.path.join(session_dir, "04_memos.json"), "w", encoding="utf-8") as handle:
             json.dump(memos_for_model(memos), handle, indent=2, ensure_ascii=False)
+        with open(os.path.join(session_dir, "04_code_memos.md"), "w", encoding="utf-8") as handle:
+            handle.write(render_code_memos_markdown(result.get("code_memos") or []))
         with open(os.path.join(session_dir, "05_codebook.md"), "w", encoding="utf-8") as handle:
             handle.write(render_codebook(codes))
+        with open(os.path.join(session_dir, "06_code_map.md"), "w", encoding="utf-8") as handle:
+            handle.write(render_code_map(code_map, codes))
+        with open(os.path.join(session_dir, "07_code_landscape.md"), "w", encoding="utf-8") as handle:
+            handle.write(render_code_landscape(codes, code_map))
         with open(os.path.join(session_dir, "next_data_plan.md"), "w", encoding="utf-8") as handle:
-            handle.write(plan["markdown"])
-        print(f"✓ Memos, codebook, and next-round plan saved to: {session_dir}")
+            handle.write(plan.get("markdown") or "")
+        with open(os.path.join(session_dir, "08_research_records.md"), "w", encoding="utf-8") as handle:
+            handle.write(render_research_records(result["research_workspace"]))
+        print(f"✓ Memos, codebook, code map, and next-round plan saved to: {session_dir}")
 
     def _save_readable_summary(self, session_dir: str, result: Dict[str, Any]):
         """Save a human-readable summary of the analysis."""
