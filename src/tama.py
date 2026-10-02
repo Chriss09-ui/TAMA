@@ -33,6 +33,7 @@ from research_records import (
     AnalyticDecision, SourceMetadata, build_workspace, continuation_context,
     decisions_for_model, prepare_previous_result, render_research_records,
 )
+from analysis_records import ResearcherAnnotations, ensure_theme_ids, record_event, scorable_themes
 
 
 class ThreadlineFramework:
@@ -177,6 +178,10 @@ class ThreadlineFramework:
         source.source_id = source.source_id or uuid.uuid4().hex
         documents = validate_documents((previous_result or {}).get("source_documents") or [])
         documents.append(source_document(source.source_id, transcript))
+        audit_trail = []
+        record_event(audit_trail, "source_registered", "程序", "登记本次原稿与分析问题",
+                     {"research_question": self.study.research_question,
+                      "source_versions": [{"source_id": item["source_id"], "sha256": item["sha256"]} for item in documents]})
         if any((code.get("source") or {}).get("source_id") == source.source_id for code in previous_codes):
             raise ValueError("新资料编号与前轮重复，请为这份新资料使用独立编号")
         current_study = replace(
@@ -227,6 +232,12 @@ class ThreadlineFramework:
         review = generation_result.get("corpus_review") or {"status": "disabled", "findings": []}
         code_map = generation_result.get("code_map")
         themes = attach_category_names(themes, codes, code_map)
+        record_event(audit_trail, "generation", "模型与程序", "形成候选编码与主题",
+                     {"initial_themes": generation_result.get("initial_candidate_themes", themes), "themes_after_review": themes,
+                      "valid_code_ids": [code["code_id"] for code in matched_codes(codes)],
+                      "definitions": [{"code_id": code["code_id"], "definition_history": code.get("definition_history") or [],
+                                       "merged_from": code.get("merged_from") or []} for code in codes]})
+        record_event(audit_trail, "corpus_review", "模型与程序", "记录全文回查完成情况与发现", review)
         memos = build_theme_memos(themes, iteration=0)
         self._write_memo_iteration(session_dir, memos, 0)
 
@@ -243,7 +254,7 @@ class ThreadlineFramework:
                              "is_acceptable": False, "global_feedback": "没有可评估的有效证据或主题；未评分。"}
         eligible = matched_codes(codes)
         while eligible and themes and not is_acceptable and iteration < self.max_iterations:
-            if not any(theme.get("code_ids") and theme.get("kind") != "evidence_gap" for theme in themes):
+            if not scorable_themes(themes):
                 break
             iteration += 1
 
@@ -267,6 +278,7 @@ class ThreadlineFramework:
                 save_path=eval_path,
                 acceptance_threshold=self.acceptance_threshold,
             )
+            record_event(audit_trail, "evaluation", "模型", f"第 {iteration} 次候选主题评估", evaluation_result)
 
             print(f"\nEvaluation Results:")
             print(f"  Average Score: {evaluation_result['average_score']:.2f}/5.0")
@@ -310,12 +322,13 @@ class ThreadlineFramework:
             ) if save_intermediate else None
 
             refinement_result = self.refinement_agent.run(
-                themes=themes,
+                themes=scorable_themes(themes),
                 evaluation_results=evaluation_result,
                 codes=eligible,
                 save_path=refinement_path,
                 memos=memos_for_model(memos),
             )
+            protected_findings = [theme for theme in themes if theme not in scorable_themes(themes)]
             old_by_name = {theme["name"]: theme for theme in themes}
             for operation in refinement_result.get("refinement_plan", {}).get("operations") or []:
                 if operation.get("operation") == "delete":
@@ -329,13 +342,18 @@ class ThreadlineFramework:
                 current_storyline = refinement_result.get("analytic_storyline") or ""
 
             # Update themes for next iteration
-            themes = link_themes_to_codes(refinement_result["refined_themes"], codes)
+            protected_names = {theme["name"] for theme in protected_findings}
+            revised = [theme for theme in refinement_result["refined_themes"] if theme["name"] not in protected_names]
+            themes = link_themes_to_codes([*revised, *protected_findings], codes)
             themes = attach_category_names(themes, codes, code_map)
             attach_operation_rationales(
                 themes, refinement_result.get("refinement_plan", {}).get("operations"),
             )
             memos = build_theme_memos(themes, previous=memos, iteration=iteration)
             self._write_memo_iteration(session_dir, memos, iteration)
+            record_event(audit_trail, "refinement", "模型", f"第 {iteration} 次主题修订",
+                         {"before": list(old_by_name.values()), "after": themes,
+                          "plan": refinement_result.get("refinement_plan") or {}})
 
             # Track refinement history
             refinement_history.append({
@@ -346,6 +364,10 @@ class ThreadlineFramework:
 
             print(f"\nPreparing for iteration {iteration + 1}...")
 
+        if not scorable_themes(themes):
+            evaluation_result = {"theme_evaluations": [], "average_score": None, "is_acceptable": False,
+                                 "global_feedback": "没有可按共享模式评分的有效主题；反例与核查发现保留供复核；未评分。"}
+            is_acceptable = False
         if evaluation_result["average_score"] is None:
             stop_reason = "no_valid_evidence" if not eligible else "no_valid_themes"
         if self.corpus_review and review["status"] != "complete":
@@ -403,6 +425,8 @@ class ThreadlineFramework:
             "codes": codes,
             "source_documents": documents,
             "corpus_review": review,
+            "researcher_annotations": ResearcherAnnotations().model_dump(),
+            "audit_trail": audit_trail,
             "final_themes": themes,
             "memos": memos,
             "next_data_plan": build_next_data_plan(codes, themes, memos),
@@ -421,6 +445,10 @@ class ThreadlineFramework:
                 "final_average_score": evaluation_result["average_score"]
             }
         }
+        ensure_theme_ids(final_result)
+        record_event(audit_trail, "analysis_completed", "程序", "本次自动处理结束，等待研究者复核",
+                     {"stop_reason": stop_reason, "accepted": is_acceptable,
+                      "average_score": evaluation_result["average_score"]})
         final_result["next_data_plan"] = build_next_data_plan(
             codes, [*themes, *(item["theme"] for item in retired_findings)], memos,
             final_result["research_workspace"], review,

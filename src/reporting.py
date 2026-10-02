@@ -5,6 +5,8 @@ from code_mapping import render_code_landscape
 from next_data_plan import GROUP_ORDER, build_next_data_plan, material_review_text
 from reflexivity import REFLEXIVITY_CHECKS, REFLEXIVITY_FIELDS
 from research_records import render_research_records
+from analysis_records import annotation_report_lines, interpretations_by_theme
+from evidence_views import DIMENSIONS, build_comparison_matrix, evidence_context
 
 CODING_METHODS_NOTE = (
     "编码方法：第一轮用过程编码，名称是过程性短语；直接采用受访者原话或隐喻的，标为实境编码。"
@@ -113,6 +115,7 @@ def assign_theme_quotes(result):
             if isinstance(code_id, int) and code_id not in counter_set
         ]
         pack = {
+            "theme_id": theme.get("theme_id"),
             "name": theme.get("name") or "",
             "description": theme.get("description") or "",
             "rationale": theme.get("rationale") or "",
@@ -196,7 +199,7 @@ def _theme_lines(result, packs, interpretations):
             lines.append(("p", pack["description"]))
         if pack["rationale"]:
             lines.append(("p", f"备忘录：{pack['rationale']}"))
-        lines.append(("h3", "厚描引文"))
+        lines.append(("h3", "原文引证"))
         if pack["supports"]:
             for quote in pack["supports"]:
                 lines.append(("p", _quote_line(quote)))
@@ -209,7 +212,9 @@ def _theme_lines(result, packs, interpretations):
             lines.append(("p", "这次没有尚未在别处用过、又可单独引用的原话。"))
         lines.append(("h3", "诠释"))
         note = ""
-        if interpretations and index - 1 < len(interpretations):
+        if isinstance(interpretations, dict):
+            note = str(interpretations.get(pack.get("theme_id"), "") or "").strip()
+        elif interpretations and index - 1 < len(interpretations):
             note = str(interpretations[index - 1] or "").strip()
         lines.append(("p", note or "（请在此写下你的诠释。模型不代写这一段。）"))
         lines.append(("h3", "反例与边界"))
@@ -395,7 +400,42 @@ def report_lines(result, reflexivity=None, interpretations=None):
     if flagged:
         lines.append(("p", f"建议人工复核（{len(flagged)}）：{'、'.join(flagged)}"))
     packs = assign_theme_quotes(result)
-    lines.extend(_theme_lines(result, packs, interpretations))
+    lines.extend(_theme_lines(result, packs, interpretations if interpretations is not None else interpretations_by_theme(result)))
+    lines.extend(annotation_report_lines(result))
+    dimension = (result.get("report_options") or {}).get("matrix_dimension", "participant_id")
+    matrix = build_comparison_matrix(result, dimension)
+    if matrix["rows"] and result.get("final_themes"):
+        lines.append(("h1", f"{DIMENSIONS[dimension]}与主题比较"))
+        counts = matrix["counts"]
+        lines.append(("p", f"有效编码 {counts['codes']} 条；不同原文位置 {counts['evidence']} 处；材料 {counts['sources']} 份；已标记参与者 {counts['participants']} 人；已标记案例 {counts['cases']} 个。"))
+        lines.append(("p", "未涉及表示未关联到有效证据，不能作为反对或刻意沉默；说话人标签不自动等同参与者，次数不代表重要性。"))
+        for row in matrix["rows"]:
+            lines.append(("h2", row["label"]))
+            for cell in row["cells"]:
+                lines.append(("bullet", f"{cell['theme']}：{cell['state']}；支持编码 {cell['supporting_code_ids']}；反证编码 {cell['contradicting_code_ids']}"))
+    if (result.get("report_options") or {}).get("include_context"):
+        lines.append(("h1", "引文的原文语境"))
+        seen_contexts = set()
+        by_id = _code_map(result)
+        for pack in packs:
+            for quote in pack["supports"] + pack["counters"]:
+                context = evidence_context(result, by_id[quote["code_id"]])
+                key = (context["source_id"], context["start"], context["end"], context["text"])
+                if key in seen_contexts:
+                    continue
+                seen_contexts.add(key)
+                lines.append(("h2", f"编码 [{quote['code_id']}] · {context['kind']}"))
+                lines.append(("p", f"来源 {context['source_id'] or '未知'}；原文区间 {context['start']}–{context['end']}"))
+                text = context["text"]
+                if len(text) > 1600:
+                    code = by_id[quote["code_id"]]
+                    document = next((item for item in result.get("source_documents") or [] if item["source_id"] == context["source_id"]), None)
+                    if context["complete"] and document:
+                        text = document["text"][max(context["start"], code["source_start"] - 400):min(context["end"], code["source_end"] + 400)]
+                    else:
+                        text = text[:1600]
+                    lines.append(("p", "语境过长，报告仅列相关片段；完整问答或段落可在网页中展开。"))
+                lines.append(("p", text or "没有可用语境"))
     lines.extend(_focus_lines())
     lines.extend(_landscape_lines(result))
     lines.extend(_plan_lines(result))

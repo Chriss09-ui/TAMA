@@ -490,3 +490,17 @@ Only codes whose excerpts and character offsets match the submitted original are
 Full-text review runs once per submission and can be disabled with corpus_review=False. Verified new findings are added and candidate themes updated automatically. Review failures are explicit; a partial or failed enabled review cannot pass the overall analysis. An analysis with no valid evidence returns a savable result with final_average_score set to null, displayed as unscored.
 
 The complete JSON includes source_documents (normalized text, source ID and SHA-256), corpus_review (status, chunk counts, added IDs and findings), and code evidence_status. Word does not include the entire original. Set both save_final=False and save_intermediate=False to avoid creating an output directory.
+
+## Comparison and researcher review
+
+The result page offers a group-by-theme matrix using supplied participant, case, speaker, event, time or source information. Support, opposition, mixed evidence and no linked evidence remain distinct. Speaker labels do not establish participant identity, and missing identifiers remain unknown. Counts distinguish codes, original-text positions, sources, participants and cases.
+
+Save each theme interpretation explicitly. Stable theme_id values keep saved notes attached when themes are reordered. Saved notes enter JSON, text and Word reports. Thematic mode also offers the overall argument editor. Two alternative explanations can separately reference verified supporting and contradicting codes, boundaries and unresolved questions. These edits do not call a model.
+
+Researcher review is separate from automated acceptance. Editing reviewed interpretations, arguments or evidence groups resets review to pending. Counterexamples, information breakpoints and evidence gaps are retained for review rather than scored or refined as shared patterns. If no scorable pattern remains, the final score is null; earlier scores remain in score_history.
+
+Expand a quote's original question/answer unit or paragraph using the saved original and offsets. Optional report context contains selected quote contexts; long contexts are shortened with an explicit notice. Missing originals produce a labelled fallback, not reconstructed text.
+
+Restore complete JSON through “查看已保存报告（JSON）” for local report viewing and editing. This rechecks originals and evidence, restores notes, and disables disk paths from the imported file. It never starts or continues analysis. Download again to preserve restored edits. New submissions remain independent.
+
+Additional result fields: analysis_id, final_themes[].theme_id, researcher_annotations (theme_notes, explanations, review, source_versions), report_options and audit_trail. Audit events record analysis milestones and human changes; missing legacy history is not invented. Saved reports and their audit trails contain researcher interpretations, so treat them as research data. Private memos and reflexivity remain isolated from model prompts.

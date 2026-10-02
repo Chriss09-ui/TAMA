@@ -28,6 +28,9 @@ threadline/
 │   ├── tama.py                     # Main Threadline orchestrator
 │   ├── chunking.py                 # Dynamic sizing and natural-boundary splitting
 │   ├── evidence.py                 # Original-text verification and eligible references
+│   ├── evidence_views.py           # Comparison matrix and original question/paragraph context
+│   ├── analysis_records.py         # Stable interpretations, review status, report restore and audit events
+│   ├── review_ui.py                # Local comparison and researcher-review controls
 │   │
 │   ├── agents/                     # Multi-agent components
 │   │   ├── __init__.py

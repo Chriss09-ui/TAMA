@@ -13,6 +13,7 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from analysis_job import JOB_REGISTRY
 from agents.generation_agent import Code
+from evidence import source_document, validate_evidence
 from research_records import CategoryRecord, ResearchWorkspace, SourceMetadata
 from research_ui import save_workspace
 
@@ -21,10 +22,14 @@ def study_result(round_id="R1"):
     codes = [Code(code_id=value, description=f"编码{value}", source_chunks=[0], excerpt=f"原话{value}",
                   context=f"访谈者：问题{value}\n受访者：原话{value}", source=SourceMetadata(source_id=f"S{value}")).model_dump()
              for value in (0, 1)]
+    documents = [source_document(f"S{value}", f"原话{value}") for value in (0, 1)]
+    for code in codes:
+        code.update(source_start=0, source_end=len(code["excerpt"]))
+    validate_evidence(codes, documents)
     workspace = ResearchWorkspace(round_id=round_id, rounds=[{"round_id": round_id}],
         categories=[CategoryRecord(category_id="C0", name="资料保留", code_ids=[0]),
                     CategoryRecord(category_id="C1", name="资料分享", code_ids=[1])])
-    return {"session_name": round_id, "accepted": True, "codes": codes, "refinement_iterations": 1,
+    return {"session_name": round_id, "accepted": True, "codes": codes, "source_documents": documents, "refinement_iterations": 1,
             "configuration": {"analysis_mode": "grounded_theory", "save_final": False},
             "metadata": {"final_average_score": 4.5}, "final_themes": [],
             "research_workspace": workspace.model_dump()}
@@ -169,6 +174,7 @@ class ResearchEditorTests(unittest.TestCase):
 
     def test_unscored_partial_review_renders_pending_codes_and_downloads(self):
         result = study_result()
+        result["codes"][0]["evidence_status"] = "unverified"
         result["metadata"]["final_average_score"] = None
         result["accepted"] = False
         result["stop_reason"] = "corpus_review_incomplete"
@@ -193,11 +199,14 @@ class ResearchEditorTests(unittest.TestCase):
             app = AppTest.from_file(str(ROOT / "streamlit_app.py"))
             app.session_state["analysis_result"] = first
             app.run()
-            app.text_area(key="theme_interpretation_0").set_value("第一份的人工说明").run()
+            first_id = app.session_state["analysis_result"]["final_themes"][0]["theme_id"]
+            app.text_area(key=f"theme_interpretation_{first_id}").set_value("第一份的人工说明").run()
             app.session_state["analysis_result"] = second
             app.run()
             self.assertFalse(app.exception)
-            self.assertEqual(app.text_area(key="theme_interpretation_0").value, "")
+            second_id = app.session_state["analysis_result"]["final_themes"][0]["theme_id"]
+            self.assertNotEqual(first_id, second_id)
+            self.assertEqual(app.text_area(key=f"theme_interpretation_{second_id}").value, "")
 
 
 

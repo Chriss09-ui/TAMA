@@ -42,6 +42,8 @@ from reporting import report_lines
 from next_data_plan import GROUP_ORDER, material_review_text
 from evidence import EVIDENCE_LABELS, REVIEW_KIND_LABELS, is_matched
 from research_ui import research_inputs, render_research_tools
+from analysis_records import ensure_theme_ids, interpretations_by_theme, restore_report
+from review_ui import render_evidence, render_matrix, render_review, save_annotations_ui
 
 def reflexivity_path() -> Path:
     override = os.environ.get("TAMA_REFLEXIVITY_PATH", "").strip()
@@ -318,7 +320,7 @@ def save_reflexivity_notes() -> None:
 
 def reset_result_widgets() -> None:
     prefixes = ("theme_interpretation_", "comparison_", "decision_", "category_", "task_",
-                "argument_", "review_", "relation_", "definition_review_")
+                "argument_", "review_", "relation_", "definition_review_", "matrix_", "explanation_", "report_", "theme_evidence_")
     for key in list(st.session_state):
         if key.startswith(prefixes) and key != "decision_mode":
             st.session_state.pop(key, None)
@@ -362,7 +364,8 @@ def render_corpus_review(result, code_by_id) -> None:
 
 def render_result(result: dict) -> None:
     """Display the latest analysis without exposing the API key."""
-    scope = (result.get("session_name"), result.get("timestamp"))
+    ensure_theme_ids(result)
+    scope = result["analysis_id"]
     if st.session_state.get("_result_widget_scope") != scope:
         reset_result_widgets()
         st.session_state["_result_widget_scope"] = scope
@@ -409,15 +412,13 @@ def render_result(result: dict) -> None:
         )
 
     render_corpus_review(result, code_by_id)
+    render_matrix(result)
     render_research_tools(result, ROOT)
+    render_review(result, ROOT)
     st.subheader("保存结果")
-    interpretations = [
-        st.session_state.get(f"theme_interpretation_{index}", "")
-        for index in range(len(themes))
-    ]
     st.download_button(
         "保存 Word 报告（DOCX）",
-        data=build_result_docx(result, reflexivity_from_state(), interpretations),
+        data=build_result_docx(result, reflexivity_from_state()),
         file_name=f"{result['session_name']}.docx",
         mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         use_container_width=True,
@@ -476,24 +477,16 @@ def render_result(result: dict) -> None:
                 st.write(f"备忘录：{theme['rationale']}")
             code_ids = theme.get("code_ids") or []
             counter_ids = set(theme.get("counterexample_code_ids") or [])
-            if code_ids and code_by_id:
-                with st.expander(f"查看证据与编码 · {len(code_ids)} 条"):
-                    for code_id in code_ids:
+            evidence_ids = list(dict.fromkeys([*code_ids, *sorted(counter_ids)]))
+            if evidence_ids and code_by_id:
+                with st.expander(f"查看证据与编码 · {len(evidence_ids)} 条"):
+                    for code_id in evidence_ids:
                         code = code_by_id.get(code_id)
                         if not code:
                             continue
-                        label = code.get("name") or code["description"]
-                        st.markdown(f"**[{code_id}] {label}**")
+                        render_evidence(result, code, f"theme_evidence_{theme['theme_id']}_{code_id}")
                         if code.get("definition"):
                             st.caption(f"定义：{code['definition']}")
-                        if code.get("excerpt"):
-                            st.write(f"原话：{code['excerpt']}")
-                        source = code.get("source") or {}
-                        if source:
-                            st.caption(f"来源：{source.get('source_id') or '未知'} · 参与者：{source.get('participant_id') or '未知'} · "
-                                       f"时间：{source.get('recorded_at') or '未知'} · 事件：{source.get('event_id') or '未知'}")
-                        if code.get("context"):
-                            st.text(code["context"])
                         st.caption(
                             f"{STATEMENT_TYPE_LABELS.get(code.get('statement_type'), '待判定')} · "
                             f"{VERIFICATION_LABELS.get(code.get('verification_status'), '尚未核实')}"
@@ -516,12 +509,20 @@ def render_result(result: dict) -> None:
                         st.write(f"原话：{code['excerpt']}")
             for question in theme.get("open_questions", []):
                 st.write(f"待核查：{material_review_text(question)}")
+            note_key = f"theme_interpretation_{theme['theme_id']}"
             st.text_area(
                 "诠释（由你写，不发送给模型）",
-                key=f"theme_interpretation_{index - 1}",
+                value=interpretations_by_theme(result).get(theme["theme_id"], ""),
+                key=note_key,
                 height=80,
                 placeholder="所以这一模式意味着什么？",
             )
+            if st.button("保存本主题诠释", key=f"theme_note_save_{theme['theme_id']}"):
+                annotations = result.get("researcher_annotations") or {}
+                notes = [note for note in annotations.get("theme_notes") or [] if note["theme_id"] != theme["theme_id"]]
+                notes.append({"theme_id": theme["theme_id"], "text": st.session_state[note_key]})
+                save_annotations_ui(result, ROOT, {**annotations, "theme_notes": notes})
+            st.caption("点击保存后，诠释进入完整 JSON、文本和 Word 报告；修改已复核的记录后，复核状态会回到待复核。")
 
     canonical_codes = [
         code for code in result.get("codes") or []
@@ -964,6 +965,23 @@ def main() -> None:
                 st.info("程序调用发生类型错误。若刚更新过代码，请重启本地服务后重试。")
     elif running:
         render_active_job()
+
+    with st.expander("查看已保存报告（JSON）"):
+        st.caption("恢复报告中的原文、研究者诠释和复核记录，仅供查看和编辑；开始新分析仍只处理新提交的文稿。")
+        saved_report = st.file_uploader("选择已保存的完整结果", type=["json"], key="saved_report_file", disabled=running)
+        if st.button("打开保存的报告", key="open_saved_report", disabled=running):
+            try:
+                if saved_report is None:
+                    raise ValueError("未选择报告")
+                restored = restore_report(json.loads(saved_report.getvalue().decode("utf-8-sig")))
+            except (ValueError, TypeError, KeyError, AttributeError):
+                st.error("无法打开报告，请选择结构完整、原文校验一致的 Threadline 结果 JSON。")
+            else:
+                JOB_REGISTRY.clear_completed()
+                st.session_state.pop("analysis_job", None)
+                st.session_state["analysis_result"] = restored
+                reset_result_widgets()
+                st.rerun()
 
     render_reflexivity()
     st.divider()

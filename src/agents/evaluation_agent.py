@@ -27,6 +27,7 @@ from prompts import (
 )
 from research_profile import ResearchProfile
 from evidence import link_themes_to_codes, matched_codes
+from analysis_records import scorable_themes
 
 
 class EvaluationCriteria(BaseModel):
@@ -418,10 +419,10 @@ class EvaluationAgent:
             raise ValueError("没有可评估的主题；请检查主题生成结果。")
         original_codes = matched_codes(original_codes)
         themes = link_themes_to_codes(themes, original_codes)
-        supported = [theme for theme in themes if theme.get("code_ids") and theme.get("kind") != "evidence_gap"]
+        supported = scorable_themes(themes)
         if not supported:
             return OverallEvaluation(theme_evaluations=[], average_score=None, is_acceptable=False,
-                                     global_feedback="没有可评分的原文支持；未评分。")
+                                     global_feedback="没有可按共享模式评分的有效主题；反例与核查发现仍保留供复核；未评分。")
 
         def evaluate_indexed(item):
             idx, theme = item
@@ -436,7 +437,7 @@ class EvaluationAgent:
 
         # Calculate average score
         average_score = sum(e.overall_score for e in theme_evaluations) / len(theme_evaluations)
-        is_acceptable = len(supported) == len(themes) and average_score >= acceptance_threshold and all(
+        is_acceptable = all(theme.get("code_ids") and theme.get("kind") != "evidence_gap" for theme in themes) and average_score >= acceptance_threshold and all(
             not evaluation.needs_refinement
             and all(criterion_score(evaluation, key) >= acceptance_threshold for key in CRITERION_KEYS)
             for evaluation in theme_evaluations

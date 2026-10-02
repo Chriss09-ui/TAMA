@@ -670,6 +670,7 @@ class GenerationAgent:
         themes = self.generate_themes(codes)
         print(f"  Generated {len(themes)} themes")
         initial_num_themes = len(themes)
+        initial_candidate_themes = [theme.model_dump() for theme in themes]
         review = {"status": "disabled", "total_chunks": len(chunks), "reviewed_chunks": 0,
                   "failed_chunks": [], "added_code_ids": [], "findings": []}
         if corpus_review:
@@ -690,6 +691,7 @@ class GenerationAgent:
             "code_memos": self.code_memos,
             "chunking": self.last_chunk_plan.to_dict() if self.last_chunk_plan else None,
             "initial_num_themes": initial_num_themes,
+            "initial_candidate_themes": initial_candidate_themes,
             "corpus_review": review,
         }
 

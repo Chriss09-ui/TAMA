@@ -1,12 +1,15 @@
 """Small Streamlit editors for researcher-owned analytic records."""
 
 import json
+from copy import deepcopy
 from pathlib import Path
 
 import streamlit as st
 from pydantic import ValidationError
 
 from next_data_plan import build_next_data_plan
+from analysis_records import ensure_theme_ids, record_event
+from evidence import matched_codes
 from research_records import (
     AnalyticDecision, ArgumentRecord, CategoryRecord, ComparisonRecord, Relationship,
     SourceMetadata, StudyReview,
@@ -36,32 +39,52 @@ def research_inputs(current_result, running):
 
 def save_workspace(result, workspace, root):
     parsed = validate_workspace(workspace, result.get("codes") or [])
-    result["research_workspace"] = parsed.model_dump()
-    result["next_data_plan"] = build_next_data_plan(result.get("codes"),
-                                                    [*(result.get("final_themes") or []),
-                                                     *(item["theme"] for item in result.get("retired_findings") or [])],
-                                                    result.get("memos"), result["research_workspace"], result.get("corpus_review"))
-    if result.get("configuration", {}).get("save_final") and result.get("output_dir"):
+    allowed = {code["code_id"] for code in matched_codes(result.get("codes") or [])}
+    if not set(parsed.argument.supporting_code_ids + parsed.argument.contradicting_code_ids).issubset(allowed):
+        raise ValueError("整体论证只能关联已匹配原文的证据")
+    candidate = deepcopy(result)
+    candidate["research_workspace"] = parsed.model_dump()
+    if result.get("research_workspace") != candidate["research_workspace"]:
+        record_event(candidate.setdefault("audit_trail", []), "research_records", "研究者", "更新本次研究记录",
+                     {"before": result.get("research_workspace") or {}, "after": candidate["research_workspace"]})
+        annotations = candidate.get("researcher_annotations") or {}
+        if (annotations.get("review") or {}).get("status") == "reviewed":
+            annotations["review"]["status"] = "pending"
+    candidate["next_data_plan"] = build_next_data_plan(candidate.get("codes"),
+        [*(candidate.get("final_themes") or []), *(item["theme"] for item in candidate.get("retired_findings") or [])],
+        candidate.get("memos"), candidate["research_workspace"], candidate.get("corpus_review"))
+    save_result_records(result, candidate, root)
+
+
+def save_result_records(result, candidate, root):
+    ensure_theme_ids(candidate)
+    if candidate.get("configuration", {}).get("save_final"):
+        if not candidate.get("output_dir"):
+            raise ValueError("本地保存位置缺失，请下载完整数据保存。")
         # Imported output paths never control writes; only this app's output tree is writable here.
-        expected = (Path(root) / "outputs" / str(result.get("session_name") or "")).resolve()
+        expected = (Path(root) / "outputs" / str(candidate.get("session_name") or "")).resolve()
         base = (Path(root) / "outputs").resolve()
-        target = Path(result["output_dir"]).resolve()
+        target = Path(candidate["output_dir"]).resolve()
         if target != expected or not target.is_relative_to(base) or not target.is_dir():
             raise ValueError("本地保存位置与本轮输出不一致，请下载完整数据保存。")
         from reporting import render_summary_text
         from codebook import render_codebook
 
         files = {
-            "00_final_results.json": json.dumps(result, ensure_ascii=False, indent=2),
-            "08_research_records.md": render_research_records(parsed),
-            "next_data_plan.md": result["next_data_plan"]["markdown"],
-            "00_summary.txt": render_summary_text(result),
-            "05_codebook.md": render_codebook(result.get("codes") or []),
+            "00_summary.txt": render_summary_text(candidate),
+            "05_codebook.md": render_codebook(candidate.get("codes") or []),
         }
+        if candidate.get("research_workspace"):
+            files["08_research_records.md"] = render_research_records(candidate["research_workspace"])
+        if candidate.get("next_data_plan"):
+            files["next_data_plan.md"] = candidate["next_data_plan"]["markdown"]
+        files["00_final_results.json"] = json.dumps(candidate, ensure_ascii=False, indent=2)
         for name, content in files.items():
             pending = target / f".{name}.tmp"
             pending.write_text(content, encoding="utf-8")
             pending.replace(target / name)
+    result.clear()
+    result.update(candidate)
 
 
 def _save(result, workspace, root):
@@ -124,9 +147,22 @@ def _comparison_editor(result, workspace, root):
                     if not reason.strip() or not author.strip():
                         st.error("请写下复核理由及研究者。")
                     else:
-                        by_id[target]["definition_review"] = status
-                        by_id[target]["review_note"] = f"{author.strip()} · {recorded_now()} · {reason.strip()}"
-                        _save(result, workspace, root)
+                        candidate = deepcopy(result)
+                        changed = next(code for code in candidate["codes"] if code["code_id"] == target)
+                        before = {key: changed.get(key) for key in ("definition_review", "review_note")}
+                        changed["definition_review"] = status
+                        changed["review_note"] = f"{author.strip()} · {recorded_now()} · {reason.strip()}"
+                        record_event(candidate.setdefault("audit_trail", []), "definition_review", "研究者", "复核编码定义的适用性",
+                                     {"code_id": target, "before": before, "status": status, "reason": reason, "researcher": author})
+                        if ((candidate.get("researcher_annotations") or {}).get("review") or {}).get("status") == "reviewed":
+                            candidate["researcher_annotations"]["review"]["status"] = "pending"
+                        try:
+                            save_result_records(result, candidate, root)
+                        except (ValueError, OSError):
+                            st.error("定义复核未保存，请核对本地保存位置。")
+                        else:
+                            st.session_state["research_record_notice"] = "定义复核已保存，未发送模型请求。"
+                            st.rerun()
 
 
 def _decision_editor(result, workspace, root):
@@ -192,14 +228,15 @@ def _category_editor(result, workspace, root):
 
 
 def _argument_editor(result, workspace, root):
-    with st.expander("整体论证、类属关系与研究评议"):
+    grounded = result.get("configuration", {}).get("analysis_mode") == "grounded_theory"
+    with st.expander("整体论证、类属关系与研究评议" if grounded else "整体论证与研究评议"):
         with st.form("research_argument_form"):
             fields = {}
             for field, label in (("claim", "这一轮的整体论断"), ("alternatives", "仍可能成立的不同解释"),
                                  ("boundaries", "解释适用的条件与边界"), ("counterexample_effect", "反例怎样改变了解释")):
                 fields[field] = st.text_area(label, value=getattr(workspace.argument, field), key=f"argument_{field}")
             for field, label in (("supporting_code_ids", "支持论断的编码"), ("contradicting_code_ids", "不支持论断的编码")):
-                fields[field] = _code_picker(label, result.get("codes") or [], f"argument_{field}", getattr(workspace.argument, field))
+                fields[field] = _code_picker(label, matched_codes(result.get("codes") or []), f"argument_{field}", getattr(workspace.argument, field))
             fields["researcher"] = st.text_input("论断研究者", value=workspace.argument.researcher, key="argument_researcher")
             review = {}
             for field, label in (("credibility", "可信性：比较、资料深度与证据联系"), ("originality", "原创性：与真实文献的对话及贡献"),
@@ -217,7 +254,7 @@ def _argument_editor(result, workspace, root):
                     else:
                         workspace.review = StudyReview(**review, researcher=fields["researcher"], date=recorded_now())
                         _save(result, workspace, root)
-        categories = {item.category_id: item for item in workspace.categories if item.active}
+        categories = {item.category_id: item for item in workspace.categories if item.active} if grounded else {}
         if len(categories) >= 2:
             with st.form("category_relationship_form"):
                 start = st.selectbox("关系起点", list(categories), format_func=lambda key: categories[key].name, key="relation_start")
@@ -277,4 +314,4 @@ def render_research_tools(result, root):
     _decision_editor(result, workspace, root)
     if result.get("configuration", {}).get("analysis_mode") == "grounded_theory":
         _category_editor(result, workspace, root)
-        _argument_editor(result, workspace, root)
+    _argument_editor(result, workspace, root)
