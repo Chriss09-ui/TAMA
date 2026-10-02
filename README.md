@@ -1,343 +1,234 @@
-# TAMA: Human–AI Collaborative Thematic Analysis using Multi-Agent LLMs
+# TAMA · 人机协作的访谈质性分析
 
-![Python](https://img.shields.io/badge/Python-3.10+-blue.svg)
-![License](https://img.shields.io/badge/License-MIT-green.svg)
-![LLM](https://img.shields.io/badge/LLM-GPT--4o-black.svg)
-![Status](https://img.shields.io/badge/ACM%20Computing%20for%20Healthcare-2025-blue.svg)
+把访谈材料整理为可回溯的编码、候选主题和研究记录，让研究者能够检查每一步分析的依据。
 
-## Overview
+TAMA 使用生成、评估与修订三个模型角色，完成从原文编码到主题迭代的工作。项目提供中文本地网页界面，也支持通过 Python 调用；适用于访谈、观察笔记和其他文字材料。研究问题、材料比较、分析决定与最终诠释由研究者掌握。
 
-This repository implements a human–AI workflow for qualitative interview analysis. Generation, Evaluation, and Refinement agents extract grounded codes, propose themes, assess them, and revise them. The default profile is topic-neutral. An optional enterprise-evidence profile supplies a specific research question and focus areas. Model outputs and scores require researcher review. Quantitative metrics reported in the TAMA paper are not implemented in this repository.
+**Python 3.10+ · Streamlit 本地界面 · [MIT 许可证](LICENSE)**
 
-## Quick Start
+[快速开始](#快速开始) · [使用流程](#使用流程) · [模型配置](#模型配置) · [结果与保存](#结果与保存) · [方法与边界](#方法与边界)
 
-### Continuing a study
+## 项目能做什么
 
-The input section's **来源与持续研究** panel records source context and can
-continue the current result or import an earlier complete JSON result. New
-codes keep distinct source identities and receive IDs after the previous
-round's IDs. Identical labels no longer cause automatic merging of distinct
-evidence; merge prompts compare the original excerpts and context.
+| 能力 | 具体用途 |
+| --- | --- |
+| 原文与编码关联 | 编码保留逐字摘录、来源与原文位置；摘录无法匹配时标记为需要人工核对。 |
+| 自然边界切块 | 按全文长度规划片段，优先保留完整问答、段落和说话人轮次。 |
+| 编码比较与编码簿 | 比较原话和语境后提议归并，记录定义、包含与排除标准、定义演变及关联证据。 |
+| 主题迭代 | 生成候选主题，按四项准则评估，再添加、拆分、合并或删除主题。 |
+| 分析过程留痕 | 保留编码备忘录、主题备忘录、反例、证据缺口、评分历史与停止原因。 |
+| 持续研究 | 接续前轮完整结果，加入新资料，记录比较与研究者确认的分析决定。 |
+| 建构扎根理论支持 | 记录聚焦编码、类属属性与边界、理论抽样、关系与论证，支持研究者判断资料充分性。 |
+| 报告与数据导出 | 下载 Word 报告与完整 JSON，或选择把研究记录保存到本地。 |
 
-Select **建构扎根理论支持** to work with researcher-selected focused codes,
-category properties and boundaries, theoretical sampling tasks, category
-sufficiency judgements, relationships, arguments, and the four study review
-criteria. Comparisons and analytic decisions are also available in the default
-thematic workflow. Saving records does not call the model. Only decisions
-explicitly selected and confirmed for a subsequent round enter its prompts;
-private memos and reflexivity remain separate.
+## 快速开始
 
-Complete JSON and Word downloads include the research records. With local
-saving enabled, `08_research_records.md` accompanies the result, and editor
-saves update the local JSON, codebook, next-data plan, and summary. Theme
-scores and processing completion do not determine theoretical saturation.
+准备 Python 3.10 或更高版本，以及 DeepSeek、MiMo 或 OpenAI 中任一服务的 API Key。
 
-The methodological mapping and the archived assessment are in
-[建构扎根理论对照](建构扎根理论对照/README.md), alongside the existing
-[编码手册对照](编码手册对照/项目如何符合编码手册.md).
+### 1. 获取项目并安装依赖
 
-**Get started in 5 minutes!** See [QUICKSTART.md](QUICKSTART.md) for detailed instructions.
+以下命令适用于 macOS / Linux：
 
 ```bash
-pip install -r requirements.txt
-export OPENAI_API_KEY='your-api-key'
+git clone https://github.com/Chriss09-ui/TAMA.git
+cd TAMA
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install -r requirements.txt
+```
+
+Windows 可使用 `python -m venv .venv` 创建环境，并在 PowerShell 中运行 `.\.venv\Scripts\Activate.ps1` 激活。
+
+### 2. 启动网页界面
+
+```bash
+python -m streamlit run streamlit_app.py
+```
+
+在浏览器中打开终端显示的本地地址。项目默认监听 `127.0.0.1`。
+
+### 3. 完成一次分析
+
+1. 在侧栏选择服务商，输入 API Key；需要时使用“测试 API 连接”检查配置。
+2. 粘贴材料，或上传 UTF-8 `.txt` / `.docx` 文件。
+3. 按研究需要填写研究问题、关注点与来源信息，然后开始分析。
+4. 检查编码证据、候选主题及“建议人工复核”的条目，下载 Word 报告或完整 JSON。
+
+网页默认使用 DeepSeek，切块策略为“自动 · 均衡”，并发请求数为 4。模型调用和连接测试会产生真实 API 请求，费用按所选服务计收。
+
+## 使用流程
+
+```mermaid
+flowchart LR
+    A[文字材料与研究问题] --> B[自然边界切块]
+    B --> C[逐字证据与初始编码]
+    C --> D[编码比较、备忘录与编码簿]
+    D --> E[候选主题]
+    E --> F[四项准则评估]
+    F -->|需要修订且未达到停止条件| G[添加、拆分、合并、删除]
+    G --> F
+    F -->|达到停止条件| H[研究者复核与结果导出]
+```
+
+### 研究设置
+
+“通用主题分析”配置不预设研究领域，可自行填写研究问题和关注点。“企业能力与证据链”配置提供企业能力、内部证据、公开信息与信息断点的分析方向。关注点用于引导分析，不要求材料必须包含这些内容。
+
+切块策略支持“自动 · 精细”“自动 · 均衡”“自动 · 少调用”和手动设置。界面会预览预计片段数；相互独立的片段编码和主题评估可并发执行，接口限流时可降低并发请求数。
+
+分析过程中可以暂停、继续或取消。暂停与取消在请求边界生效，已经发出的请求可能仍会完成。刷新网页后可重新连接当前任务，需要保持本地服务运行。
+
+### 接续前一轮研究
+
+在“来源与持续研究”中接续当前结果，或载入之前下载的完整 JSON，再加入本轮新材料。每份新资料使用独立来源编号；新编码接续已有编号，相同标签不会自动覆盖不同来源的证据。
+
+需要让已确认的分析决定指导下一轮时，选择要提交的决定并确认。前轮类属、比较与抽样记录也可选择纳入本轮分析；私人手记与自反记录保持独立。
+
+### 建构扎根理论支持
+
+在“来源与持续研究”的“分析方式”中选择“建构扎根理论支持”，可记录聚焦编码、类属发展、理论抽样任务、资料充分性判断、关系与论证，以及研究审查记录。编辑和保存这些记录本身不会调用模型。
+
+这一模式提供研究过程的记录与分析支持；理论饱和、类属充分性和最终理论解释需要研究者结合资料判断。
+
+## 模型配置
+
+网页界面可直接输入 API Key，也可读取环境变量。点击“保存 API Key”会将密钥保存到本机系统凭据库（macOS 使用钥匙串）。密钥优先级为：本次输入 → 系统凭据库 → 环境变量。
+
+| 服务商 | API Key 环境变量 | 示例脚本中的默认模型 | 示例脚本的可选配置 |
+| --- | --- | --- | --- |
+| DeepSeek | `DEEPSEEK_API_KEY` | `deepseek-flash` | `DEEPSEEK_MODEL`、`DEEPSEEK_BASE_URL` |
+| MiMo | `MIMO_API_KEY` | `mimo-v2.5-pro` | `MIMO_MODEL`、`MIMO_BASE_URL` |
+| OpenAI | `OPENAI_API_KEY` | `gpt-4o` | `OPENAI_MODEL` |
+
+上表描述本仓库的默认配置。具体可用模型与接口地址以服务商及你的账号配置为准；网页界面的模型名称，以及 DeepSeek / MiMo 的接口地址，可在侧栏调整。DeepSeek 在界面中显示为 `DeepSeek-V4.1-Flash`，请求时映射为 `deepseek-flash`。
+
+### 运行示例脚本
+
+在已激活的虚拟环境中，设置任一服务的密钥。例如：
+
+```bash
+export DEEPSEEK_API_KEY='替换为你的密钥'
 python example_usage.py
 ```
 
-### Xiaomi MiMo API
+脚本在缺少 `data/sample_transcript.txt` 时创建示例材料，运行分析并保存结果。多个密钥同时存在时，脚本按 **MiMo → DeepSeek → OpenAI** 的顺序选择服务；网页界面按侧栏选择使用服务。
 
-The example also supports Xiaomi MiMo through its OpenAI-compatible API. Set
-`MIMO_API_KEY` to use MiMo instead of OpenAI. The default MiMo model is
-`mimo-v2.5-pro`, which supports the JSON output used by all three agents.
+### Jev 决策模式（实验性）
 
-```bash
-export MIMO_API_KEY='your-mimo-api-key'
-python example_usage.py
-```
+默认“跟随主模型”使用主模型完成结构化评分。选择“Jev（实验性）”后，Jev 负责主题评分与修订判断，编码、主题生成和文字反馈仍由主模型完成。网页中需单独配置 Jev Key；示例脚本通过 `JEV_API_KEY` 启用，也支持 `JEV_BASE_URL` 与 `JEV_MODEL`。
 
-For a MiMo Token Plan, set `MIMO_BASE_URL` to the OpenAI-compatible Base URL
-provided for your plan. You can also set `MIMO_MODEL` to another model that
-supports JSON output, such as `mimo-v2.5`. When multiple provider keys are set,
-the example uses MiMo first. For direct `TAMAFramework` use, pass the MiMo API key,
-`model="mimo-v2.5-pro"`, and
-`base_url="https://api.xiaomimimo.com/v1"` (or your Token Plan Base URL).
+评估会记录各准则的置信度，低于阈值的条目标记为“建议人工复核”。主模型自报的置信度不能视为经过校准的概率，Jev 在具体研究材料上的表现也需要实际验证。
 
-See the [MiMo first API call](https://mimo.mi.com/docs/zh-CN/quick-start/summary/first-api-call)
-and [structured output](https://mimo.mi.com/docs/zh-CN/quick-start/usage-guide/text-generation/structured-output)
-documentation for current endpoints and supported models.
+## 结果与保存
 
-### DeepSeek API
+网页默认关闭“保存本地结果”和“保存阶段文件”，结果保留在本地服务进程中，可手动下载：
 
-DeepSeek offers an OpenAI-compatible API and JSON output for the analysis
-agents. Set `DEEPSEEK_API_KEY` to use the DeepSeek-V4.1-Flash model through
-its API model ID `deepseek-flash` and official OpenAI-compatible endpoint
-`https://api.deepseek.com`:
+- **Word 报告（DOCX）**：主题、支持证据、研究记录与供研究者补充的诠释部分。
+- **完整数据（JSON）**：编码、主题、评估、修订历史、研究记录与运行配置，可用于后续研究。
 
-```bash
-export DEEPSEEK_API_KEY='your-deepseek-api-key'
-python example_usage.py
-```
+开启本地保存后，文件写入 `outputs/<session_name>/`。同名会话会追加后缀，避免覆盖已有结果。
 
-You can override the defaults with `DEEPSEEK_MODEL` or `DEEPSEEK_BASE_URL`.
-When multiple provider keys are set, `example_usage.py` selects MiMo, then
-DeepSeek, then OpenAI. The web interface starts with DeepSeek selected and
-shows `DeepSeek-V4.1-Flash` as its model name; requests use `deepseek-flash`.
-Enter the API key in the sidebar or set `DEEPSEEK_API_KEY`. See the [DeepSeek first API call](https://api-docs.deepseek.com/zh-cn/)
-and [JSON output](https://api-docs.deepseek.com/zh-cn/guides/json_mode/)
-documentation for the current model names and endpoint.
+| 文件 | 内容 |
+| --- | --- |
+| `00_final_results.json`、`00_summary.txt` | 完整结果与可读摘要，开启“保存本地结果”时生成。 |
+| `04_code_memos.md`、`04_memos.md`、`04_memos.json` | 编码与主题备忘录、支持理由、反例和不确定性。 |
+| `04_memos_iter*.json` | 各轮主题备忘录，供回看分析过程。 |
+| `05_codebook.md` | 编码定义、包含与排除标准、证据与定义演变。 |
+| `06_code_map.md`、`07_code_landscape.md` | 从编码到类别与概念的映射，以及编码证据数量概览。 |
+| `08_research_records.md` | 来源、比较、分析决定、类属、抽样、关系与研究审查记录。 |
+| `next_data_plan.md` | 下一轮需补访、查阅或核对的问题。 |
+| `01_generation.json` | 原始片段与编码，仅在开启“保存阶段文件”时生成。 |
+| `02_evaluation_iter*.json`、`03_refinement_iter*.json` | 逐轮评估与修订，仅在开启“保存阶段文件”时生成。 |
 
-### Local web interface
+只要开启任一本地保存选项，就会生成相应的研究记录文件。通过 Python 调用时，`run_analysis()` 默认保存最终结果、关闭阶段文件；同时传入 `save_final=False` 和 `save_intermediate=False` 可仅在内存中运行。
 
-Install the dependencies and launch the local interface:
+### 数据与隐私
 
-```bash
-pip install -r requirements.txt
-streamlit run streamlit_app.py
-```
+界面在本机运行，模型分析会将相关材料、编码和主题发送给所选服务；启用 Jev 时，主题评估内容也会发送给 Jev。保存和下载的结果包含逐字证据，应按研究资料管理。
 
-The interface accepts pasted text, a UTF-8 `.txt` file, or a `.docx` file.
-DOCX body paragraphs and table rows are read in document order; scanned pages
-or images need OCR before analysis. Select MiMo,
-DeepSeek, or OpenAI in the sidebar, then enter the API key or set the selected
-provider's `MIMO_API_KEY`, `DEEPSEEK_API_KEY`, or `OPENAI_API_KEY` environment
-variable. Results appear on the page. Local output is optional and off by
-default in the web interface. The app listens on `127.0.0.1` for local use.
+私人备忘录中 `**[human]**` 与 `**[/human]**` 之间的手记、自反记录不会作为模型输入。结果可通过“清除服务内结果”从当前服务的结果缓存中清除，已下载或已保存的文件仍保留。
 
-After analysis, use **保存 Word 报告（DOCX）** to download a readable report with
-the final themes, descriptions, and associated codes. Use **保存完整数据（JSON）**
-to download the complete result for later processing. These downloads contain
-verbatim excerpts when present. Enable **保存本地结果** to write
-`00_final_results.json` and `00_summary.txt` under `outputs/`.
-For no local transcript-derived files, leave both local saving and stage files
-off. The transcript still goes to the selected model service and the result
-remains in the local service process until it restarts or a new run replaces it.
-Use **清除服务内结果** after downloading to discard the latest in-memory
-result without restarting the service.
+`outputs/`、`reflexivity.md`、环境文件和两份本地项目讲解文件已加入 `.gitignore`。
 
-To keep an API key across browser and app restarts, enter it in the sidebar and
-click **保存 API Key**. The key is stored in the operating system credential store
-(macOS Keychain on macOS), separately for each provider, rather than in the
-repository or `outputs/`. Leave the field empty to use the saved key; click
-**删除已保存 Key** to remove it. A newly typed key takes precedence over a saved
-key, and a saved key takes precedence over the provider's environment variable.
+## Python 调用
 
-Use **测试 API 连接** in the sidebar to send one short request with the current
-key, model, and endpoint; the provider may charge for it. During analysis,
-**暂停分析** waits for any request already in progress to finish, then stops
-before the next model request. **继续分析** resumes the same run. **取消分析**
-stops at the next request boundary. Refreshing the browser reconnects to the
-running job and its result; keep the local Streamlit service running. An
-already-sent request may finish and be charged before pause or cancellation.
-
-Choose **切块策略** in the sidebar before starting analysis. The default
-**自动 · 均衡** mode calculates a document-specific target from the complete
-transcript length, then places boundaries at complete question-answer groups,
-paragraphs, speaker turns, or sentence endings. **自动 · 精细** uses smaller
-chunks, while **自动 · 少调用** uses larger chunks. **手动设置** preserves the
-previous adjustable limit, counting Chinese characters individually and other
-text by whitespace-separated words. The page previews the expected chunk count
-before analysis. Final JSON records the selected strategy, resolved target,
-hard limit, source length, and actual chunk count.
-
-Independent code extraction requests and theme evaluations run concurrently.
-The sidebar's **并发请求数** defaults to 4 and can be set from 1 to 8; lower it
-if the model provider rate-limits requests. Results keep the original chunk
-and theme order. Theme generation still waits for all codes, and refinement
-waits for all evaluations. Pausing blocks requests that have not started yet;
-requests already sent to the provider may finish first. The selected limit is
-recorded as `configuration.max_workers` in the final JSON result.
-
-### Decision model integration (System One / Jev)
-
-Theme evaluation uses a hybrid two-stage flow. A decision provider first
-answers typed questions for each theme (four 1–5 criterion scores plus a
-yes/no refinement decision). Score answers include confidence; Jev's Noul
-answer supplies only the probability of "yes", so the app derives a separate
-certainty proxy from its distance to 0.5. Themes that pass
-every criterion with confident decisions skip the expensive feedback call;
-themes with any score below 4, a refinement decision, or a confidence below
-the threshold get a second call that writes feedback text and refinement
-suggestions. Decisions with low confidence are marked `建议人工复核` in the
-results.
-
-Two decision providers are available:
-
-- **跟随主模型 (default)**: the selected analysis model answers the typed
-  questions in JSON mode. Confidence values are self-reported by the model —
-  a weak signal kept for the audit trail, not a calibrated probability.
-- **Jev（实验性）**: the TypeSafe Jev System One decision API
-  ([docs](https://docs.typesafe.ai/api)) returns probability-based scores and
-  confidence in a single request per theme. Select this mode and enter the
-  Jev API key in the sidebar; it can be stored in the system credential vault.
-  `JEV_API_KEY` remains available as a fallback, with optional `JEV_BASE_URL`
-  and `JEV_MODEL`. The sidebar's **测试 API 连接** verifies the decision
-  endpoint separately. Jev evaluates themes; the main text model still
-  extracts codes, generates themes, and writes detailed feedback. Jev does
-  not generate the qualitative analysis text. TypeSafe notes that accuracy
-  on Chinese text needs validation with the user's own examples.
-
-The sidebar's **决策模式** selects the provider. The confidence threshold
-lives under **高级设置** (default 0.7). Saved results record the provider and
-threshold under `configuration.decision_provider` /
-`configuration.confidence_threshold`, and each theme evaluation carries
-`score_confidences`, zero-based `raw_scores`, one-based probability-weighted
-`weighted_scores`, `flagged_for_review`, and
-`feedback_source` (`llm`, `placeholder`, or `fallback`) under
-`final_evaluation.theme_evaluations` and, when stage files are enabled, in
-`02_evaluation_iter*.json`. The run is accepted only when the average and
-every criterion for every theme meet the threshold and no theme needs
-refinement. A positive typed refinement decision cannot be cancelled by the
-main model's prose feedback. If a decision request fails with a recoverable
-error, the theme falls back to the legacy single-call evaluation and the
-result is marked `fallback`. Jev configuration errors (for example an
-invalid key) stop the run instead of being silently ignored.
-
-## Key Features
-
-- Multi-agent LLM architecture with coordinated Generation, Evaluation, and Refinement agents.
-- Researcher-configured study focus and evaluation criteria; final interpretation remains with the researcher.
-- Decision-model integration: theme scores carry per-criterion confidence; low-confidence themes are flagged for human review.
-- Centralized prompts: all model instructions, evaluation rubrics, and connection-test questions live in `src/prompts.py`.
-- Duplicate-code compaction, batched theme synthesis, and score-history early stopping.
-
-## Architecture
-
-The TAMA framework uses a multi-agent workflow consisting of Generation, Evaluation, and Refinement agents, with iterative oversight from a clinical expert. The expert provides initial goals and evaluation criteria and makes the final decision to accept or revise the generated themes.
-
-### Workflow Diagram
-![TAMA Architecture](figure/TAMA-Workflow.png)
-
-## Installation
-
-### Prerequisites
-- Python 3.10 or higher
-- An API key for MiMo, DeepSeek, or OpenAI
-
-### Quick Setup
-
-```bash
-# Run from the project directory
-pip install -r requirements.txt
-
-# Set API key
-export OPENAI_API_KEY='your-api-key-here'
-
-# Run example
-python example_usage.py
-```
-
-For detailed installation instructions, see [INSTALLATION.md](INSTALLATION.md).
-
-## Usage
-
-### Basic Example
+在项目根目录中运行，先配置 `DEEPSEEK_API_KEY`：
 
 ```python
 import os
-from src.tama import TAMAFramework, load_transcript
+import sys
+from pathlib import Path
 
-# Initialize framework
-tama = TAMAFramework(
-    api_key=os.getenv("OPENAI_API_KEY"),
-    model="gpt-4o",
+sys.path.insert(0, str(Path("src").resolve()))
+from tama import TAMAFramework, load_transcript
+
+framework = TAMAFramework(
+    api_key=os.environ["DEEPSEEK_API_KEY"],
+    model="deepseek-flash",
+    base_url="https://api.deepseek.com",
+    research_question="受访者如何在不确定性中作出决定？",
+    focus_areas=["决策过程", "信息来源", "不确定性"],
     max_iterations=5,
-    acceptance_threshold=4.0
+    acceptance_threshold=4.0,
 )
 
-# Load transcript and run analysis
-transcript = load_transcript("data/your_transcript.txt")
-result = tama.run_analysis(
-    transcript=transcript,
-    session_name="my_analysis",
-    save_intermediate=True
+result = framework.run_analysis(
+    transcript=load_transcript("你的访谈.txt"),
+    session_name="my_study",
+    save_final=True,
+    save_intermediate=False,
 )
 
-# Access results
-print(f"Generated {len(result['final_themes'])} themes")
-print(f"Final score: {result['metadata']['final_average_score']:.2f}/5.0")
+print("候选主题数：", len(result["final_themes"]))
+print("停止原因：", result["stop_reason"])
+print("结果目录：", result["output_dir"])
 ```
 
-### Custom Evaluation Criteria
+`load_transcript()` 读取文本文件。DOCX 的正文段落与表格按文档顺序提取，可通过网页上传；扫描件和图片需先转换为文字。
 
-The runtime instructions are written in Chinese. Generated codes, themes, and
-feedback follow the language of the supplied interview text. The default
-`generic` profile does not assume a topic. Select `enterprise_evidence` to
-study specific capabilities, internal evidence, holders, public information,
-and information gaps. Both profiles accept `research_question`, `focus_areas`,
-and `expert_criteria`; focus areas are guidance, not a requirement to find
-them in every interview. The bundled sample transcript is a clinical example.
+## 方法与边界
 
-```python
-# Define study-specific criteria from researchers
-expert_criteria = {
-    "coverage": "应覆盖材料中的重要规律",
-    "actionability": "应表达一个清楚、便于理解的概念",
-    "distinctiveness": "应与其他主题明确区分",
-    "relevance": "应准确反映受访者的表达，并有材料支持"
-}
+主题评估使用四项准则：**覆盖度、模式性、区分度、相关性**。默认验收要求平均分及每个主题的每项准则都达到 4 分（满分 5 分），并且没有主题需要修订；平均分达标本身不够。
 
-tama = TAMAFramework(
-    api_key=api_key,
-    profile="generic",  # or "enterprise_evidence"
-    research_question="受访者如何理解这段经历？",
-    focus_areas=["决策过程", "不确定性"],
-    expert_criteria=expert_criteria
-)
+结果记录 `score_history` 与 `stop_reason`：
+
+| 停止原因 | 含义 |
+| --- | --- |
+| `accepted` | 达到配置的评分与修订要求。 |
+| `no_improvement` | 连续评估缺少足够提升，触发早停。 |
+| `max_iterations` | 已达到设置的最多评估轮次。 |
+
+这些状态表示本轮程序为何停止。模型分数用于辅助检查，不能证明研究结论有效，也不能判定理论饱和。编码出现次数同样不能直接代表其研究意义；候选解释、反例与证据缺口需要回到原材料核对。
+
+本仓库实现了 TAMA 风格的多角色分析流程，未实现 TAMA 论文中的全部定量验证指标。当前方法设计及软件支持分别记录在：
+
+- [《质性研究入门指南》对照说明](METHODOLOGY.md)：总体研究立场、证据、备忘录与报告设计。
+- [《质性研究编码手册》对照说明](编码手册对照/项目如何符合编码手册.md)：编码周期与编码操作。
+- [建构扎根理论对照](建构扎根理论对照/README.md)：持续比较、类属发展、理论抽样与当前实现。
+
+## 项目结构与开发
+
+```text
+streamlit_app.py       本地网页入口
+example_usage.py       命令行示例
+src/tama.py           分析流程编排
+src/agents/           生成、评估与修订角色
+src/decisions/        主模型与 Jev 决策接口
+src/prompts.py        模型指令与评估准则
+src/research_records.py  研究记录与持续研究的数据结构
+src/research_ui.py    研究记录编辑界面
+src/reporting.py      摘要与 Word 报告
+tests/                自动化测试
 ```
 
-### Output Structure
+在安装依赖后，从项目根目录运行测试：
 
-`TAMAFramework.run_analysis` saves final files by default for API callers,
-while stage-file saving defaults to off. Pass `save_final=False` for an
-in-memory run. Saved files keep verbatim excerpts. When enabled, files under
-`outputs/[session_name]/` are:
+```bash
+python -m unittest discover -s tests
+```
 
-- `00_final_results.json` and `00_summary.txt`: final result
-- `04_memos.md` and `04_memos.json`: why each theme holds those codes. Text between `[human]` markers is for the researcher and is not sent to the model
-- `04_code_memos.md`: code-level memos written before themes. Researcher notes in the same markers are not sent to the model
-- `04_memos_iter*.json`: the same theme memo at each generation or refinement pass
-- `05_codebook.md`: method, definition, inclusion, exclusion, related codes, notes, and examples for each canonical code
-- `06_code_map.md`: four archived steps from the full code list to categories and concepts
-- `07_code_landscape.md`: outline of canonical codes with excerpt counts. Counts are not importance
-- `next_data_plan.md`: open questions grouped for the next round of data collection
-- `01_generation.json`: chunks and codes, only with `save_intermediate=True`
-- `02_evaluation_iter*.json`, `03_refinement_iter*.json`: iterative audit files, only with `save_intermediate=True`
+更多说明见 [安装指南](INSTALLATION.md)、[使用指南](USAGE_GUIDE.md) 和 [项目结构](PROJECT_STRUCTURE.md)。部分扩展文档保留早期示例，当前界面与保存行为以本 README 和代码为准。
 
-Names generated automatically include a random suffix. A supplied name that
-already exists receives a suffix instead of overwriting an earlier run.
+## 许可证
 
-## Framework Components
-
-### 1. Generation Agent
-- **Chunking**: Dynamically sizes model windows and preserves natural transcript boundaries
-- **Coding**: Extracts codes (<25 words) from each chunk
-- **Theme Generation**: Collapses identical labels, writes definitions at that merge, maps codes into categories, synthesizes at most 40 distinct codes per batch, then consolidates candidate themes and records a draft analytic storyline
-
-### 2. Evaluation Agent
-Evaluates themes using four criteria:
-- **Coverage**: Comprehensively captures important patterns
-- **Pattern** (stored as `actionability`): a shared meaning across the material, rather than a topic, background section, or interview-guide heading. A background section scores 1 or 2; a pattern with supporting codes scores 4.
-- **Distinctiveness**: Clearly distinct from other themes
-- **Relevance**: Accurately reflects the data
-
-### 3. Refinement Agent
-Refines themes using four operations:
-- **Add**: Add missing important themes
-- **Split**: Split themes containing multiple concepts
-- **Combine**: Combine overlapping themes
-- **Delete**: Delete irrelevant themes
-
-### Iterative Process
-The framework iterates through evaluation and refinement until:
-- Themes achieve acceptance threshold (default: 4.0/5.0), OR
-- Maximum iterations reached (default: 5)
-- Average score fails to improve by more than 0.05 for two consecutive evaluations (configurable with `early_stop_patience`)
-
-Each result records `score_history` and `stop_reason`. Scores are model
-judgments, not calibrated measures of qualitative validity.
-
-### Run tests
-
-From this checkout, use `.venv/bin/python -m unittest discover -s tests`.
-The existing `.venv` was created without `pip`; if dependencies need to be
-installed into it, use `uv pip install --python .venv/bin/python -r requirements.txt`.
+本项目使用 [MIT 许可证](LICENSE)，保留原有作者的版权声明。
