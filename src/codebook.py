@@ -23,6 +23,7 @@ def evidence_key(code):
 
 def exact_merge(codes):
     """Deduplicate the same evidence; identical labels alone do not mean synonyms."""
+    by_id = {code.code_id: code for code in codes}
     groups = {}
     for code in codes:
         key = evidence_key(code)
@@ -36,12 +37,18 @@ def exact_merge(codes):
             continue
         canonical = min(group, key=lambda item: item.code_id)
         others = [item for item in group if item.code_id != canonical.code_id]
-        canonical.merged_from = list(dict.fromkeys([
-            *canonical.merged_from, *(item.code_id for item in others),
-        ]))
+        inherited = list(canonical.merged_from)
         canonical.version = max(canonical.version, 2)
         for other in others:
+            inherited.append(other.code_id)
+            for child_id in other.merged_from:
+                child = by_id.get(child_id)
+                if child is not None:
+                    child.merged_into = canonical.code_id
+                    inherited.append(child_id)
+            other.merged_from = []
             other.merged_into = canonical.code_id
+        canonical.merged_from = list(dict.fromkeys(inherited))
     return codes
 
 

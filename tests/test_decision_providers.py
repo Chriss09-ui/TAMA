@@ -39,6 +39,18 @@ def fake_llm_response(data):
 
 
 class LLMDecisionClientTests(unittest.TestCase):
+    def test_non_finite_decision_numbers_are_rejected(self):
+        for value in (float("inf"), float("-inf"), float("nan")):
+            for key, field in (("coverage", "score"), ("coverage", "confidence"), ("needs_check", "probability")):
+                with self.subTest(value=value, key=key, field=field), patch("decisions.llm_client.OpenAI") as client_cls:
+                    data = {"answers": {"coverage": {"score": 3, "confidence": 0.8},
+                                        "needs_check": {"probability": 0.1, "confidence": 0.8},
+                                        "route": {"choice": "add", "confidence": 0.8}}}
+                    data["answers"][key][field] = value
+                    client_cls.return_value.chat.completions.create.return_value = fake_llm_response(data)
+                    with self.assertRaises(DecisionProviderError):
+                        LLMDecisionClient(api_key="test").ask({}, QUESTIONS)
+
     def test_ask_makes_one_json_mode_call_per_state(self):
         with patch("decisions.llm_client.OpenAI") as client_cls:
             client = client_cls.return_value
@@ -118,6 +130,18 @@ def jev_client(handler, **kwargs):
 
 
 class JevDecisionClientTests(unittest.TestCase):
+    def test_non_finite_decision_numbers_are_rejected(self):
+        for value in (float("inf"), float("-inf"), float("nan")):
+            for key, field in (("coverage", "score"), ("coverage", "confidence"), ("needs_check", "noul")):
+                with self.subTest(value=value, key=key, field=field):
+                    client = jev_client(lambda request: httpx.Response(200))
+                    data = {"answers": {"coverage": {"score": 3, "confidence": 0.8},
+                                        "needs_check": {"noul": 0.1},
+                                        "route": {"choice": "add", "confidence": 0.8}}}
+                    data["answers"][key][field] = value
+                    with self.assertRaises(DecisionProviderError):
+                        client._parse_answers(data, QUESTIONS)
+
     def test_ask_posts_expected_request_and_parses_answers(self):
         requests = []
 

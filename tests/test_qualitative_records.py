@@ -13,6 +13,7 @@ from evidence_fixtures import matched_code
 from code_mapping import apply_related_codes, build_code_map, render_code_landscape
 from code_memos import code_memos_for_model, render_code_memos_markdown
 from codebook import exact_merge, render_codebook, semantic_merge
+from evidence import link_themes_to_codes, source_document, validate_evidence
 from prompts import build_code_extraction_prompt
 from memos import (
     HUMAN_OPEN,
@@ -97,8 +98,44 @@ class ScaleAndMemoTests(unittest.TestCase):
         self.assertEqual(loaded["trouble"], "我想替作者下结论。")
         self.assertEqual(loaded["interest"], "")
 
+    def test_reflexivity_round_trip_preserves_headings_and_code_fences(self):
+        from tempfile import TemporaryDirectory
+
+        note = "第一段\n\n## 自拟标题\n第二段\n## 什么让我感兴趣？\n```text\n代码示例\n```\n最后一段"
+        with TemporaryDirectory() as temp:
+            path = Path(temp) / "reflexivity.md"
+            save_reflexivity(path, {"surprise": note, "interest": "独立记录"})
+            loaded = load_reflexivity(path)
+        self.assertEqual(loaded["surprise"], note)
+        self.assertEqual(loaded["interest"], "独立记录")
+
+    def test_legacy_reflexivity_preserves_custom_headings(self):
+        from tempfile import TemporaryDirectory
+
+        with TemporaryDirectory() as temp:
+            path = Path(temp) / "reflexivity.md"
+            path.write_text("# 研究者自反\n\n## 什么让我惊喜？\n第一段\n## 自拟标题\n第二段\n\n## 什么让我感兴趣？\n另一条记录", encoding="utf-8")
+            loaded = load_reflexivity(path)
+        self.assertEqual(loaded["surprise"], "第一段\n## 自拟标题\n第二段")
+        self.assertEqual(loaded["interest"], "另一条记录")
+
 
 class CodebookTests(unittest.TestCase):
+    def test_exact_merge_transfers_all_members_of_existing_families(self):
+        codes = [matched_code(code_id=i, description=f"编码 {i}", excerpt=excerpt, source_start=start)
+                 for i, excerpt, start in [(0, "甲", 0), (1, "乙", 1), (2, "甲", 0), (3, "丙", 2)]]
+        semantic_merge(codes, [{"code_ids": [0, 1], "name": "统一标签"},
+                               {"code_ids": [2, 3], "name": "统一标签"}])
+        exact_merge(codes)
+        validate_evidence(codes, [source_document("fixture", "甲乙丙")])
+        self.assertEqual(codes[0].merged_from, [1, 2, 3])
+        self.assertTrue(all(code.merged_into == 0 for code in codes[1:]))
+        self.assertTrue(all(not code.merged_from for code in codes[1:]))
+        linked = link_themes_to_codes([{"name": "主题", "code_ids": [0]}], codes)[0]
+        self.assertEqual(linked["code_ids"], [0, 1, 2, 3])
+        exact_merge(codes)
+        self.assertEqual(codes[0].merged_from, [1, 2, 3])
+
     def test_synonymous_codes_merge_and_keep_source_ids(self):
         codes = [
             matched_code(code_id=0, description="每天把抱怨抄进表格", source_chunks=[0], excerpt="抄进表格"),

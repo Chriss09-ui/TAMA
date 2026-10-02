@@ -13,6 +13,7 @@ import streamlit as st
 from docx import Document
 from docx.opc.exceptions import PackageNotFoundError
 from docx.table import Table
+from lxml.etree import XMLSyntaxError
 from openai import APIStatusError, OpenAI
 
 
@@ -249,7 +250,7 @@ def extract_docx_text(contents: bytes) -> str:
             return extract_docx_body_xml(contents)
         except (BadZipFile, KeyError, ElementTree.ParseError, ValueError) as exc:
             raise ValueError("DOCX 文件结构异常，无法读取正文。请另存为新的 DOCX 后重试。") from exc
-    except (BadZipFile, PackageNotFoundError) as exc:
+    except (BadZipFile, PackageNotFoundError, XMLSyntaxError) as exc:
         raise ValueError("DOCX 文件无法读取，请确认文件未损坏且格式正确。") from exc
 
     lines = []

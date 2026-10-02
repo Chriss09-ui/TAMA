@@ -1,6 +1,10 @@
 """Local reflexivity notes. These records are never added to model prompts."""
 
 from pathlib import Path
+import re
+
+
+FORMAT_MARKER = "<!-- threadline-reflexivity:v2 -->"
 
 
 REFLEXIVITY_FIELDS = (
@@ -33,13 +37,18 @@ def render_reflexivity(data: dict) -> str:
     lines = [
         "# 研究者自反",
         "",
+        FORMAT_MARKER,
+        "",
         "这些记录只保存在本机，不会发送给模型。",
         "",
     ]
     for key, label in _sections():
+        text = (data.get(key) or "").strip()
+        longest = max((len(match.group()) for match in re.finditer(r"`+", text)), default=0)
+        fence = "`" * max(3, longest + 1)
         lines.append(f"## {label}")
         lines.append("")
-        lines.append((data.get(key) or "").strip())
+        lines.extend([f"{fence}text", text, fence])
         lines.append("")
     return "\n".join(lines).rstrip() + "\n"
 
@@ -49,13 +58,25 @@ def parse_reflexivity(markdown: str) -> dict:
     labels = {label: key for key, label in _sections()}
     current = None
     bucket: list[str] = []
+    modern = FORMAT_MARKER in markdown.splitlines()[:4]
+    fence = None
 
     def flush() -> None:
         if current in data:
             data[current] = "\n".join(bucket).strip()
 
     for line in markdown.splitlines():
-        if line.startswith("## "):
+        if fence is not None:
+            if line == fence:
+                fence = None
+            else:
+                bucket.append(line)
+            continue
+        opening = re.fullmatch(r"(`{3,})text", line) if modern else None
+        if current is not None and not any(bucket) and opening:
+            fence = opening.group(1)
+            continue
+        if line.startswith("## ") and line[3:].strip() in labels:
             flush()
             current = labels.get(line[3:].strip())
             bucket = []

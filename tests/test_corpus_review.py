@@ -12,6 +12,7 @@ sys.path.insert(0, str(ROOT / "src"))
 from agents.generation_agent import Chunk, Code, GenerationAgent, Theme, family_ids
 from agents.refinement_agent import RefinementAgent
 from agents.evaluation_agent import EvaluationAgent
+from codebook import semantic_merge
 from analysis_job import AnalysisCancelled, AnalysisJob
 from threading import Barrier, Event
 from evidence import is_matched, link_themes_to_codes, source_document, validate_documents, validate_evidence
@@ -50,6 +51,22 @@ class EvidenceBoundaryTests(unittest.TestCase):
         self.agent.client = Mock()
         self.text = "受访者：我保存记录。"
         self.chunk = Chunk(chunk_id=0, text=self.text, start_word=0, end_word=12, end_char=len(self.text))
+
+    def test_merged_counterexample_does_not_reclassify_other_family_members(self):
+        codes = self.agent.codes_from_data(self.chunk, [extracted("保存", "我保存"), extracted("记录", "记录")])
+        semantic_merge(codes, [{"code_ids": [0, 1], "name": "处理记录"}])
+        candidate = theme((0,), (1,))
+        linked = link_themes_to_codes([candidate], codes)[0]
+        self.assertEqual(linked["code_ids"], [0, 1])
+        self.assertEqual(linked["counterexample_code_ids"], [1])
+        self.assertEqual(linked["kind"], "pattern")
+        self.assertEqual(link_themes_to_codes([linked], codes)[0], linked)
+
+        self.agent.client.chat.completions.create.return_value = response({"themes": [candidate]})
+        generated = self.agent.generate_themes(codes)[0]
+        self.assertEqual(generated.counterexample_code_ids, [1])
+        self.assertEqual(generated.kind, "pattern")
+
 
     def test_matching_real_statement_does_not_require_external_verification(self):
         code = self.agent.codes_from_data(self.chunk, [extracted("保存记录", "我保存记录")])[0]

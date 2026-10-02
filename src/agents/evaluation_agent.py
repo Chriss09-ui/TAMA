@@ -6,7 +6,7 @@ Provides feedback for refinement until affirmative answer is received.
 
 from typing import List, Dict, Any, Optional
 from openai import OpenAI
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, TypeAdapter, field_validator
 import json
 import math
 from concurrent.futures import ThreadPoolExecutor
@@ -41,15 +41,15 @@ class EvaluationCriteria(BaseModel):
 class EvaluationResult(BaseModel):
     """Represents evaluation result for a theme."""
     theme_name: str
-    coverage_score: int  # 1-5 scale
+    coverage_score: int = Field(ge=1, le=5)
     coverage_feedback: str
-    actionability_score: int  # 1-5 scale
+    actionability_score: int = Field(ge=1, le=5)
     actionability_feedback: str
-    distinctiveness_score: int  # 1-5 scale
+    distinctiveness_score: int = Field(ge=1, le=5)
     distinctiveness_feedback: str
-    relevance_score: int  # 1-5 scale
+    relevance_score: int = Field(ge=1, le=5)
     relevance_feedback: str
-    overall_score: float
+    overall_score: float = Field(ge=1, le=5, allow_inf_nan=False)
     needs_refinement: bool
     refinement_suggestions: List[str]
     # Decision-layer audit fields (populated when a decision provider scored
@@ -60,6 +60,13 @@ class EvaluationResult(BaseModel):
     weighted_scores: Optional[Dict[str, float]] = None
     flagged_for_review: bool = False
     feedback_source: str = "llm"  # "llm" | "placeholder" | "fallback"
+
+    @field_validator("coverage_score", "actionability_score", "distinctiveness_score", "relevance_score", mode="before")
+    @classmethod
+    def numeric_rating(cls, value):
+        if type(value) not in (int, float):
+            raise ValueError("评估分数必须为 1–5 的整数")
+        return value
 
 
 class OverallEvaluation(BaseModel):
@@ -328,7 +335,7 @@ class EvaluationAgent:
             "actionability": result["actionability_feedback"],
             "distinctiveness": result["distinctiveness_feedback"],
             "relevance": result["relevance_feedback"],
-            "needs_refinement": bool(result["needs_refinement"]),
+            "needs_refinement": TypeAdapter(bool).validate_python(result["needs_refinement"]),
             "refinement_suggestions": result.get("refinement_suggestions", []),
         }
 

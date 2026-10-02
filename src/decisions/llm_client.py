@@ -6,6 +6,7 @@ weak signal kept in the audit trail until a calibrated provider is used.
 """
 
 import json
+import math
 from typing import Any, Dict, Optional
 
 from openai import OpenAI
@@ -94,4 +95,10 @@ def _as_float(value: Any, key: str, default: float) -> float:
         return default
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise DecisionProviderError(f"决策模型对问题「{key}」返回了无法解析的数值。")
-    return float(value)
+    try:
+        number = float(value)
+    except OverflowError as exc:
+        raise DecisionProviderError(f"决策模型对问题「{key}」返回了无法解析的数值。") from exc
+    if not math.isfinite(number):
+        raise DecisionProviderError(f"决策模型对问题「{key}」返回了非有限数值。")
+    return number

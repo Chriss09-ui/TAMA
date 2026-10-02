@@ -68,6 +68,18 @@ class StreamlitAppTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "DOCX 文件无法读取"):
             read_transcript("上传文件", "", uploaded_file)
 
+    def test_docx_with_invalid_body_xml_reports_read_error(self):
+        original = BytesIO()
+        Document().save(original)
+        damaged = BytesIO()
+        with ZipFile(BytesIO(original.getvalue())) as source, ZipFile(damaged, "w") as target:
+            for item in source.infolist():
+                data = b"<broken" if item.filename == "word/document.xml" else source.read(item.filename)
+                target.writestr(item, data)
+        damaged.name = "访谈.docx"
+        with self.assertRaisesRegex(ValueError, "DOCX 文件无法读取"):
+            read_transcript("上传文件", "", damaged)
+
     def test_docx_with_missing_auxiliary_part_recovers_body_text(self):
         document = Document()
         document.add_paragraph("访谈者：最近有什么变化？")

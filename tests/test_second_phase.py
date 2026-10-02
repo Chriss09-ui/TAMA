@@ -128,6 +128,44 @@ class ComparisonAndContextTests(unittest.TestCase):
 
 
 class AnnotationAndReviewTests(unittest.TestCase):
+    def test_duplicate_generated_themes_get_distinct_stable_ids(self):
+        result = result_fixture()
+        first = result["final_themes"][0]
+        first.pop("theme_id")
+        second = {**deepcopy(first), "description": "另一种解释"}
+        third = deepcopy(first)
+        result["final_themes"] = [first, second, third]
+        ensure_theme_ids(result)
+        ids = [theme["theme_id"] for theme in result["final_themes"]]
+        self.assertEqual(len(set(ids)), 3)
+        saved = update_annotations(result, {"theme_notes": [{"theme_id": ids[1], "text": "第二个主题的诠释"}]})
+        restored = restore_report(json.loads(json.dumps(saved)))
+        restored["final_themes"].reverse()
+        ensure_theme_ids(restored)
+        self.assertEqual([theme["theme_id"] for theme in restored["final_themes"]], ids[::-1])
+        self.assertEqual(interpretations_by_theme(restored), {ids[1]: "第二个主题的诠释"})
+
+    def test_duplicate_imported_theme_ids_are_rejected(self):
+        result = result_fixture()
+        result["final_themes"][1]["theme_id"] = result["final_themes"][0]["theme_id"]
+        with self.assertRaises(ValueError):
+            restore_report(result)
+
+    def test_restore_rejects_invalid_score_history_before_rendering(self):
+        invalid = [None, {}, [{"iteration": 1}], [{"iteration": 1, "average_score": None}],
+                   [{"iteration": 1, "average_score": "4.5"}], [{"iteration": 1, "average_score": 99}],
+                   [{"iteration": 1, "average_score": float("nan")}],
+                   [{"iteration": True, "average_score": 4.5}]]
+        for history in invalid:
+            with self.subTest(history=history):
+                result = result_fixture()
+                result["score_history"] = history
+                with self.assertRaisesRegex(ValueError, "评分历史"):
+                    restore_report(result)
+        result = result_fixture()
+        result["score_history"] = [{"iteration": 1, "average_score": 4.5}]
+        self.assertEqual(restore_report(result)["score_history"], result["score_history"])
+
     def test_notes_survive_json_round_trip_and_theme_reordering(self):
         result = result_fixture()
         saved = update_annotations(result, notes_fixture(result), confirm_review=True)

@@ -7,7 +7,7 @@ providers own the transport.
 
 from typing import Dict, List, Literal, Optional
 
-from pydantic import BaseModel, model_validator
+from pydantic import BaseModel, FiniteFloat, model_validator
 
 QuestionKind = Literal["noul", "choice", "score"]
 
@@ -39,11 +39,11 @@ class DecisionAnswer(BaseModel):
 
     key: str
     kind: QuestionKind
-    probability: Optional[float] = None  # noul: P(yes) in 0-1
+    probability: Optional[FiniteFloat] = None  # noul: P(yes) in 0-1
     choice: Optional[str] = None  # choice: highest-probability option name
-    score: Optional[float] = None  # score: weighted zero-based level index
-    confidence: float = 0.0  # 0-1
-    probabilities: Optional[Dict[str, float]] = None
+    score: Optional[FiniteFloat] = None  # score: weighted zero-based level index
+    confidence: FiniteFloat = 0.0  # 0-1
+    probabilities: Optional[Dict[str, FiniteFloat]] = None
     legend: Optional[Dict[str, str]] = None
 
     @model_validator(mode="after")

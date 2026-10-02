@@ -5,6 +5,7 @@ This module is the single adaptation point if the API evolves: question
 serialization lives in `_serialize_question`, answer parsing in `_parse_answers`.
 """
 
+import math
 import random
 import time
 from typing import Any, Dict, Optional
@@ -149,7 +150,13 @@ def _required_float(raw: Dict[str, Any], field: str, key: str) -> float:
     value = raw.get(field)
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise DecisionProviderError(f"Jev 决策接口对问题「{key}」返回了无法解析的 {field}。")
-    return float(value)
+    try:
+        number = float(value)
+    except OverflowError as exc:
+        raise DecisionProviderError(f"Jev 决策接口对问题「{key}」返回了无法解析的 {field}。") from exc
+    if not math.isfinite(number):
+        raise DecisionProviderError(f"Jev 决策接口对问题「{key}」返回了非有限的 {field}。")
+    return number
 
 
 def _clamp(value: float, low: float, high: float) -> float:

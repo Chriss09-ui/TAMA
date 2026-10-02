@@ -64,15 +64,24 @@ def ensure_theme_ids(result):
     result.setdefault("analysis_id", uuid4().hex)
     seen = set()
     for theme in result.get("final_themes") or []:
+        theme_id = theme.get("theme_id")
+        if theme_id:
+            if not isinstance(theme_id, str) or theme_id in seen:
+                raise ValueError("主题编号缺失或重复，无法关联研究者诠释")
+            seen.add(theme_id)
+    for theme in result.get("final_themes") or []:
         if not theme.get("theme_id"):
             identity = {key: theme.get(key) for key in ("name", "kind", "code_ids", "counterexample_code_ids")}
             identity["code_ids"] = sorted(identity["code_ids"] or [])
             identity["counterexample_code_ids"] = sorted(identity["counterexample_code_ids"] or [])
             digest = sha256((result["analysis_id"] + json.dumps(identity, sort_keys=True, ensure_ascii=False)).encode()).hexdigest()
-            theme["theme_id"] = digest[:24]
-        if not isinstance(theme["theme_id"], str) or theme["theme_id"] in seen:
-            raise ValueError("主题编号缺失或重复，无法关联研究者诠释")
-        seen.add(theme["theme_id"])
+            theme_id = digest[:24]
+            suffix = 1
+            while theme_id in seen:
+                theme_id = sha256(f"{digest}:{suffix}".encode()).hexdigest()[:24]
+                suffix += 1
+            theme["theme_id"] = theme_id
+            seen.add(theme_id)
     return result
 
 
@@ -148,6 +157,17 @@ def restore_report(payload):
             raise ValueError("报告配置或评分结构无效")
     if "accepted" in candidate and type(candidate["accepted"]) is not bool:
         raise ValueError("报告处理状态无效")
+    if "score_history" in candidate:
+        history = candidate["score_history"]
+        if not isinstance(history, list):
+            raise ValueError("报告评分历史格式无效")
+        for item in history:
+            if not isinstance(item, dict):
+                raise ValueError("报告评分历史格式无效")
+            iteration, score = item.get("iteration"), item.get("average_score")
+            if (type(iteration) is not int or iteration < 1 or type(score) not in (int, float)
+                    or not 0 <= score <= 5 or not math.isfinite(score)):
+                raise ValueError("报告评分历史格式无效")
     options = candidate.get("report_options") or {}
     from evidence_views import DIMENSIONS
     if (options.get("matrix_dimension", "participant_id") not in DIMENSIONS

@@ -487,13 +487,9 @@ class GenerationAgent:
             ]
             counterexample_ids = [
                 code_id for code_id in raw_counters
-                if isinstance(code_id, int) and code_id in code_by_id
+                if type(code_id) is int and code_id in code_by_id
             ]
-            counterexample_ids = list(dict.fromkeys(
-                expanded
-                for code_id in counterexample_ids
-                for expanded in family_ids(code_id, code_by_id)
-            ))
+            counterexample_ids = list(dict.fromkeys(counterexample_ids))
             kind = theme_data.get("kind") or "pattern"
             questions = list(theme_data.get("open_questions") or [])
             if not code_ids:

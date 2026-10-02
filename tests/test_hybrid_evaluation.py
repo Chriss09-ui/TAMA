@@ -70,6 +70,44 @@ class HybridEvaluationTests(unittest.TestCase):
         agent.before_model_call = stages.append
         return agent, stages
 
+    def test_fallback_rejects_scores_outside_the_rating_range(self):
+        for score in (0, 99, float("inf"), True):
+            with self.subTest(score=score):
+                provider = StubDecisionProvider(decision_answers())
+                provider.ask = Mock(side_effect=RuntimeError("offline failure"))
+                agent, _ = self.make_agent(provider)
+                payload = {f"{key}_score": score for key in ("coverage", "actionability", "distinctiveness", "relevance")}
+                payload.update({f"{key}_feedback": "反馈" for key in ("coverage", "actionability", "distinctiveness", "relevance")})
+                payload.update(needs_refinement=False, refinement_suggestions=[])
+                agent.client.chat.completions.create.return_value = fake_response(payload)
+                with self.assertRaises(ValueError):
+                    agent.evaluate_all_themes([THEME], CODES)
+
+    def test_feedback_parses_false_string_without_requesting_refinement(self):
+        provider = StubDecisionProvider(decision_answers(confidence=0.5))
+        agent, _ = self.make_agent(provider)
+        agent.client.chat.completions.create.return_value = fake_response({
+            "coverage_feedback": "反馈", "actionability_feedback": "反馈",
+            "distinctiveness_feedback": "反馈", "relevance_feedback": "反馈",
+            "needs_refinement": "false", "refinement_suggestions": [],
+        })
+        result = agent.evaluate_theme(THEME, [THEME], CODES)
+        self.assertFalse(result.needs_refinement)
+        self.assertTrue(result.flagged_for_review)
+
+    def test_fallback_keeps_integer_valued_float_ratings_compatible(self):
+        provider = StubDecisionProvider(decision_answers())
+        provider.ask = Mock(side_effect=RuntimeError("offline failure"))
+        agent, _ = self.make_agent(provider)
+        payload = {f"{key}_score": 4.0 for key in ("coverage", "actionability", "distinctiveness", "relevance")}
+        payload.update({f"{key}_feedback": "反馈" for key in ("coverage", "actionability", "distinctiveness", "relevance")})
+        payload.update(needs_refinement=False, refinement_suggestions=[])
+        agent.client.chat.completions.create.return_value = fake_response(payload)
+        result = agent.evaluate_all_themes([THEME], CODES)
+        self.assertEqual(result.average_score, 4.0)
+        self.assertTrue(result.is_acceptable)
+
+
     def test_strong_theme_skips_feedback_call(self):
         provider = StubDecisionProvider(decision_answers())
         agent, stages = self.make_agent(provider)

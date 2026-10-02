@@ -122,7 +122,9 @@ def link_themes_to_codes(themes, codes):
         # A rejected explicit reference must not be rescued by a shared label.
         if not raw_ids:
             ids = expand([item for label in theme.get("codes") or [] for item in by_label.get(label, [])])
-        counters = expand(theme.get("counterexample_code_ids") or [])
+        # A counterexample belongs to its original excerpt, not every merged sibling.
+        counters = list(dict.fromkeys(item for item in theme.get("counterexample_code_ids") or []
+                                     if type(item) is int and item in by_id))
         theme.update(code_ids=ids, counterexample_code_ids=counters,
                      codes=[value(by_id[item], "description") for item in ids],
                      open_questions=list(theme.get("open_questions") or []),
