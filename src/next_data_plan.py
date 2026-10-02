@@ -1,25 +1,34 @@
-"""Collect open questions into a plan for the next round of material."""
+"""Collect checks and interpretation limits for the submitted material."""
 
-ROLE_MARKERS = ("谁", "角色", "访谈", "受访者", "导师", "经理", "同事", "补访", "询问", "负责人")
-MATERIAL_MARKERS = ("材料", "文件", "文档", "官网", "合同", "记录", "邮件", "系统", "截图", "原文", "档案")
-GROUP_ORDER = ("需补访角色", "需查材料", "需核对信息")
+MATERIAL_MARKERS = ("来源", "摘录", "说话人", "编号", "原文", "匹配", "位置")
+CONFLICT_MARKERS = ("矛盾", "冲突", "反例", "反证", "不同说法")
+GROUP_ORDER = ("原文与来源核对", "矛盾与反例检查", "解释边界")
+COLLECTION_ACTIONS = ("补访", "访谈提纲", "招募", "去问", "安排采访", "联系受访者", "重新访谈", "理论抽样", "询问负责人", "寻找受访者", "采访提纲")
+
+
+def material_review_text(text: str) -> str:
+    """Do not present legacy collection instructions as current analysis tasks."""
+    cleaned = str(text or "").strip()
+    if any(action in cleaned for action in COLLECTION_ACTIONS):
+        return "当前材料尚无法回答此问题，请核对相关原文与解释边界。"
+    return cleaned
 
 
 def classify_question(text: str) -> str:
+    if any(marker in text for marker in CONFLICT_MARKERS):
+        return "矛盾与反例检查"
     if any(marker in text for marker in MATERIAL_MARKERS):
-        return "需查材料"
-    if any(marker in text for marker in ROLE_MARKERS):
-        return "需补访角色"
-    return "需核对信息"
+        return "原文与来源核对"
+    return "解释边界"
 
 
-def build_next_data_plan(codes, themes, memos, workspace=None) -> dict:
+def build_next_data_plan(codes, themes, memos, workspace=None, corpus_review=None) -> dict:
     """Group unresolved questions. Nothing already recorded is dropped."""
     items = []
     seen = set()
 
-    def add(text, source):
-        cleaned = str(text or "").strip()
+    def add(text, source, code_ids=None):
+        cleaned = material_review_text(text)
         if not cleaned or cleaned in seen:
             return
         seen.add(cleaned)
@@ -27,10 +36,11 @@ def build_next_data_plan(codes, themes, memos, workspace=None) -> dict:
             "text": cleaned,
             "source": source,
             "group": classify_question(cleaned),
+            "code_ids": list(code_ids or []),
         })
 
     for code in codes or []:
-        add(code.get("open_question"), f"编码 {code.get('code_id')}")
+        add(code.get("open_question"), f"编码 {code.get('code_id')}", [code.get("code_id")])
     for theme in themes or []:
         name = theme.get("name") or "未命名主题"
         for question in theme.get("open_questions") or []:
@@ -45,6 +55,8 @@ def build_next_data_plan(codes, themes, memos, workspace=None) -> dict:
         add(memo.get("uncertain"), f"备忘录 {memo.get('theme')}")
     for comparison in (workspace or {}).get("comparisons") or []:
         add(comparison.get("open_question"), f"比较 {comparison.get('code_ids')}")
+    for finding in (corpus_review or {}).get("findings") or []:
+        add(finding.get("reason"), f"全文回查 · {finding.get('kind')}", [finding["code_id"]])
 
     groups = {name: [] for name in GROUP_ORDER}
     for item in items:
@@ -56,9 +68,9 @@ def build_next_data_plan(codes, themes, memos, workspace=None) -> dict:
 
 def render_next_data_plan(groups, tasks=None) -> str:
     lines = [
-        "# 下一轮可以收集什么",
+        "# 当前材料复核",
         "",
-        "这里汇总这次分析留下的待核查问题、备忘录里的不确定和反例。它是下一轮抽样和访谈提纲的原料，不判断材料是否已经足够。",
+        "这里汇总本次文稿中的原文核对、矛盾和解释边界。材料没有交代的内容保持未知；不生成采访或收集任务。",
         "",
     ]
     for name in GROUP_ORDER:
@@ -70,11 +82,4 @@ def render_next_data_plan(groups, tasks=None) -> str:
         else:
             lines.extend(f"- {entry}" for entry in entries)
         lines.append("")
-    for task in tasks or []:
-        lines.extend([f"## {task['kind']}：{task['target']}", "",
-                      f"- 类属：{task.get('category_id') or '未关联'}",
-                      f"- 缺口：{task['gap']}", f"- 不同解释：{task.get('alternatives') or '待明确'}",
-                      f"- 选择理由：{task['rationale']}", f"- 开放追问：{task.get('questions') or '待填写'}",
-                      f"- 预期改变：{task.get('expected_change') or '一般核查，不推定理论目的'}",
-                      f"- 状态：{task['status']}；分析后果：{task.get('outcome') or '尚未回填'}", ""])
     return "\n".join(lines).rstrip() + "\n"

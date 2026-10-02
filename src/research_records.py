@@ -211,7 +211,6 @@ def continuation_context(workspace: ResearchWorkspace) -> str:
         "comparisons": [item.model_dump(exclude={"researcher", "date"}) for item in workspace.comparisons],
         "categories": [item.model_dump(exclude={"history", "researcher", "date", "judgement", "status"})
                        for item in workspace.categories if item.active],
-        "sampling_tasks": [item.model_dump(exclude={"researcher", "date"}) for item in workspace.sampling_tasks],
     }, ensure_ascii=False)
 
 
@@ -255,6 +254,8 @@ def prepare_previous_result(result: dict) -> tuple[list[dict], ResearchWorkspace
     if not workspace.rounds:
         workspace.round_id = result.get("session_name") or "imported"
         workspace.rounds = [{"round_id": workspace.round_id, "date": result.get("timestamp") or ""}]
+    from evidence import validate_evidence
+    validate_evidence(codes, result.get("source_documents") or [])
     return codes, workspace
 
 
@@ -384,12 +385,6 @@ def render_research_records(workspace) -> str:
                       f"理由：{decision.reason}；编码：{decision.code_ids}",
                       f"研究者：{decision.researcher}；时间：{decision.date}；本轮{'已提交' if submitted else '未提交给模型'}"])
     names = {item.category_id: item.name for item in parsed.categories}
-    for task in parsed.sampling_tasks:
-        lines.extend(["", f"## {task.kind}：{task.target}", "", f"类属：{names.get(task.category_id) or '未关联'}",
-                      f"缺口：{task.gap}", f"不同解释：{task.alternatives}", f"选择理由：{task.rationale}",
-                      f"开放追问：{task.questions}", f"预期改变：{task.expected_change}",
-                      f"状态：{task.status}；分析后果：{task.outcome}",
-                      f"研究者：{task.researcher}；时间：{task.date}"])
     argument = parsed.argument
     lines.extend(["", "## 整体论证", "", argument.claim or "（待研究者形成论断）",
                   f"支持编码：{argument.supporting_code_ids}", f"反证编码：{argument.contradicting_code_ids}",

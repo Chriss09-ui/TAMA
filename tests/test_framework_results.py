@@ -16,7 +16,7 @@ class FrameworkResultTests(unittest.TestCase):
     def test_accepted_run_keeps_final_evaluation_audit_data(self):
         generation_result = {
             "chunks": ["访谈文本"],
-            "codes": [{"code_id": 0, "description": "编码", "excerpt": "访谈文本"}],
+            "codes": [{"code_id": 0, "description": "编码", "excerpt": "访谈文本", "source_start": 0, "source_end": 4, "source": {"source_id": "audit"}}],
             "themes": [{"name": "主题", "description": "描述", "codes": ["编码"]}],
             "chunking": {
                 "strategy": "balanced", "total_characters": 4,
@@ -38,11 +38,11 @@ class FrameworkResultTests(unittest.TestCase):
                 patch("tama.RefinementAgent") as refinement_cls:
             generation_cls.return_value.run.return_value = generation_result
             evaluation_cls.return_value.run.return_value = evaluation_result
-            framework = TAMAFramework(api_key="test", output_dir=output_dir)
+            framework = TAMAFramework(api_key="test", output_dir=output_dir, corpus_review=False)
 
             result = framework.run_analysis(
                 "访谈文本", session_name="audit-test", save_intermediate=False,
-                case_id="Case-01",
+                case_id="Case-01", source_metadata={"source_id": "audit"},
             )
 
             self.assertEqual(result["case_id"], "Case-01")

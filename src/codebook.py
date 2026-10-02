@@ -1,6 +1,7 @@
 """Codebook merge and the readable codebook export."""
 
 import re
+from evidence import EVIDENCE_LABELS
 from datetime import datetime, timezone
 
 
@@ -11,20 +12,25 @@ def _label_key(code) -> str | None:
     return re.sub(r"\s+", "", text).casefold()
 
 
+def evidence_key(code):
+    key = _label_key(code)
+    source_id = getattr(getattr(code, "source", None), "source_id", "")
+    if key is None or not code.excerpt or not source_id or code.source_start is None:
+        return None
+    return (key, source_id, code.source_start, code.source_end, code.excerpt,
+            getattr(code, "context", ""), code.statement_type)
+
+
 def exact_merge(codes):
     """Deduplicate the same evidence; identical labels alone do not mean synonyms."""
     groups = {}
     for code in codes:
-        key = _label_key(code)
-        source = getattr(code, "source", None)
-        source_id = getattr(source, "source_id", "")
-        if key is None or not code.excerpt or not source_id or code.source_start is None:
+        key = evidence_key(code)
+        if key is None:
             continue
         if code.merged_into is not None or code.separate_from or code.definition_locked:
             continue
-        evidence_key = (key, source_id, code.source_start, code.source_end, code.excerpt,
-                        getattr(code, "context", ""), code.statement_type)
-        groups.setdefault(evidence_key, []).append(code)
+        groups.setdefault(key, []).append(code)
     for group in groups.values():
         if len(group) < 2:
             continue
@@ -165,6 +171,7 @@ def render_codebook(codes) -> str:
             lines.append("（内生编码：名称来自材料中的原话或隐喻）")
             lines.append("")
         lines.append(f"- 方法：{code.get('method') or '过程编码'}")
+        lines.append(f"- 原文匹配：{EVIDENCE_LABELS.get(code.get('evidence_status'), '尚未核验')}")
         lines.append(f"- 版本：{code.get('version') or 1}")
         lines.append(f"- 定义：{code.get('definition') or '（尚未写定义）'}")
         lines.append(f"- 包含：{code.get('include') or '（尚未写）'}")

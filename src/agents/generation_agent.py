@@ -6,7 +6,7 @@ Handles chunking, coding, and initial theme generation from interview transcript
 from bisect import bisect_right
 from datetime import date
 from typing import List, Dict, Any, Literal, Optional
-from openai import OpenAI
+from openai import OpenAI, OpenAIError
 from pydantic import BaseModel, Field, StrictInt
 import json
 from concurrent.futures import ThreadPoolExecutor
@@ -20,7 +20,9 @@ from chunking import (
 )
 from code_mapping import apply_related_codes, attach_category_names, build_code_map, map_for_prompt, memos_from_map
 from code_memos import code_memos_for_model, memos_from_groups
-from codebook import exact_merge, semantic_merge
+from codebook import evidence_key, exact_merge, semantic_merge
+from analysis_job import AnalysisCancelled
+from evidence import is_matched, link_themes_to_codes, matched_codes, source_document, validate_evidence
 from prompts import (
     CODE_EXTRACTION_SYSTEM_PROMPT,
     THEME_GENERATION_SYSTEM_PROMPT,
@@ -29,6 +31,7 @@ from prompts import (
     build_code_merge_prompt,
     build_theme_generation_prompt,
     build_theme_consolidation_prompt,
+    build_corpus_review_prompt,
 )
 from research_profile import ResearchProfile
 from research_records import SourceMetadata, apply_decisions
@@ -40,7 +43,9 @@ THEME_BATCH_SIZE = 40
 def family_ids(code_id, code_by_id):
     """Return a canonical code id together with every id merged into it."""
     code = code_by_id.get(code_id)
-    if code is not None and code.merged_into is not None and code.merged_into in code_by_id:
+    if code is None or not is_matched(code):
+        return []
+    if code.merged_into is not None and is_matched(code_by_id.get(code.merged_into)):
         code_id = code.merged_into
         code = code_by_id.get(code_id)
     ids = []
@@ -48,7 +53,7 @@ def family_ids(code_id, code_by_id):
         ids.append(code_id)
     if code is not None:
         ids.extend(member for member in code.merged_from if isinstance(member, int))
-    return ids
+    return [item for item in ids if is_matched(code_by_id.get(item))]
 
 
 class Chunk(BaseModel):
@@ -73,6 +78,7 @@ class Code(BaseModel):
     focus: List[str] = Field(default_factory=list)
     statement_type: str = "undetermined"
     verification_status: str = "unknown"
+    evidence_status: Literal["matched", "missing", "mismatch", "unverified"] = "unverified"
     open_question: str = ""
     name: str = ""
     definition: str = ""
@@ -155,6 +161,7 @@ class GenerationAgent:
         self.code_memos = []
         self.code_id_start = 0
         self.source_metadata = None
+        self.corpus_review_findings = []
 
     def chunk_transcript(self, transcript: str) -> List[Chunk]:
         """
@@ -219,9 +226,11 @@ class GenerationAgent:
         )
 
         result = json.loads(response.choices[0].message.content)
-        codes = []
+        return self.codes_from_data(chunk, result.get("codes", []))
 
-        for idx, code_data in enumerate(result.get("codes", [])):
+    def codes_from_data(self, chunk: Chunk, records) -> List[Code]:
+        codes = []
+        for idx, code_data in enumerate(records):
             excerpt = code_data.get("excerpt")
             offset = chunk.text.find(excerpt) if isinstance(excerpt, str) and excerpt else -1
             verified_excerpt = excerpt if offset >= 0 else None
@@ -245,6 +254,7 @@ class GenerationAgent:
                 method="实境编码" if in_vivo else "过程编码",
                 source_chunks=[chunk.chunk_id],
                 excerpt=verified_excerpt,
+                evidence_status="matched" if offset >= 0 else ("mismatch" if excerpt else "missing"),
                 source_start=chunk.start_char + offset if offset >= 0 else None,
                 source_end=chunk.start_char + offset + len(excerpt) if offset >= 0 else None,
                 focus=code_data.get("focus") or [],
@@ -290,8 +300,9 @@ class GenerationAgent:
         """Merge identical labels, then ask the model to merge synonyms and write definitions."""
         self.codebook_note = ""
         self.code_memos = []
-        exact_merge(codes)
-        active = [code for code in codes if code.merged_into is None]
+        eligible = matched_codes(codes)
+        exact_merge(eligible)
+        active = [code for code in eligible if code.merged_into is None]
         if len(active) < 2:
             return codes
         payload = [
@@ -305,6 +316,7 @@ class GenerationAgent:
                 "excerpt": (code.excerpt or "")[:180],
                 "source": code.source.model_dump(),
                 "context": code.context,
+                "note": code.note,
                 "separate_from": code.separate_from,
                 "definition_locked": code.definition_locked,
                 "evidence": self._family_evidence(code, codes),
@@ -325,7 +337,7 @@ class GenerationAgent:
         try:
             result = json.loads(response.choices[0].message.content)
             groups = result.get("groups") or []
-            semantic_merge(codes, groups)
+            semantic_merge(eligible, groups)
             self.code_memos = memos_from_groups(groups, "归并", date.today().isoformat())
         except (json.JSONDecodeError, ValueError, TypeError, KeyError):
             self.codebook_note = "模型归并结果无法使用，保留各条编码；仅对同一来源、同一位置的重复证据去重。"
@@ -337,11 +349,13 @@ class GenerationAgent:
         family = {code.code_id, *code.merged_from}
         return [{"code_id": item.code_id, "excerpt": item.excerpt or "", "context": item.context,
                  "source": item.source.model_dump(), "speaker": item.speaker,
+                 "note": item.note,
                  "definition_review": item.definition_review}
-                for item in codes if item.code_id in family]
+                for item in matched_codes(codes) if item.code_id in family]
 
     def map_codes(self, codes: List[Code]):
         """Archive a four-step code map after synonym merge and before themes."""
+        codes = matched_codes(codes)
         active = [code for code in codes if code.merged_into is None]
         today = date.today().isoformat()
         if len(active) < 2:
@@ -392,6 +406,10 @@ class GenerationAgent:
         Returns:
             List of Theme objects
         """
+        codes = matched_codes(codes)
+        if not codes:
+            self.analytic_storyline = ""
+            return []
         code_by_id = {code.code_id: code for code in codes}
         active = [code for code in codes if code.merged_into is None]
         # A shared label is not enough to discard contextual differences.
@@ -451,7 +469,7 @@ class GenerationAgent:
                 code_id for code_id in theme_data.get("code_ids", [])
                 if isinstance(code_id, int) and code_id in code_by_id
             ]
-            if not code_ids:
+            if not theme_data.get("code_ids"):
                 code_ids = [
                     code_id
                     for description in theme_data.get("codes", [])
@@ -494,9 +512,11 @@ class GenerationAgent:
             ))
 
         payload = [theme.model_dump() for theme in themes]
+        payload = link_themes_to_codes(payload, [code.model_dump() for code in codes])
         attach_category_names(payload, [code.model_dump() for code in codes], self.code_map)
         for theme, item in zip(themes, payload):
-            theme.category_names = list(item.get("category_names") or [])
+            for key in ("category_names", "kind", "code_ids", "counterexample_code_ids", "codes", "open_questions"):
+                setattr(theme, key, item[key])
         return themes
 
     def _theme_prompt(self, codes) -> str:
@@ -505,7 +525,87 @@ class GenerationAgent:
             self.study,
             map_for_prompt(self.code_map),
             code_memos_for_model(self.code_memos),
+            self.corpus_review_findings,
         )
+
+    def review_corpus(self, chunks, codes, themes):
+        """One bounded pass; each failed chunk is explicit and cancellation propagates."""
+        summary = [{"name": theme.name, "description": theme.description[:200],
+                    "kind": theme.kind} for theme in themes]
+
+        def review_chunk(chunk):
+            if self.before_model_call:
+                self.before_model_call(f"全文回查 · 片段 {chunk.chunk_id + 1}/{len(chunks)}")
+            existing = [code.model_dump() for code in matched_codes(codes)
+                        if code.source.source_id == self.source_metadata["source_id"]
+                        and chunk.start_char <= code.source_start < chunk.end_char]
+            try:
+                response = self.client.chat.completions.create(
+                    model=self.model,
+                    messages=[{"role": "system", "content": CODE_EXTRACTION_SYSTEM_PROMPT},
+                              {"role": "user", "content": build_corpus_review_prompt(
+                                  chunk.text, summary, existing, self.study, self.source_metadata)}],
+                    temperature=0.2, response_format={"type": "json_object"},
+                )
+                result = json.loads(response.choices[0].message.content)
+                if not isinstance(result, dict) or not isinstance(result.get("findings"), list):
+                    raise ValueError("全文回查结果格式无效")
+                findings = []
+                for item in result["findings"]:
+                    if (not isinstance(item, dict) or item.get("kind") not in
+                            ("missed_support", "counterexample", "context_limit")
+                            or not isinstance(item.get("reason"), str) or not item["reason"].strip()
+                            or not isinstance(item.get("code"), dict)
+                            or not (item["code"].get("name") or item["code"].get("description"))):
+                        raise ValueError("全文回查发现格式无效")
+                    code = self.codes_from_data(chunk, [item["code"]])[0]
+                    findings.append((item["kind"], item["reason"], code))
+                return chunk.chunk_id, findings, None
+            except AnalysisCancelled:
+                raise
+            except (OpenAIError, ValueError, TypeError, KeyError, IndexError, AttributeError,
+                    ConnectionError, TimeoutError) as exc:
+                return chunk.chunk_id, [], type(exc).__name__
+
+        if len(chunks) > 1 and self.max_workers > 1:
+            with ThreadPoolExecutor(max_workers=min(self.max_workers, len(chunks))) as executor:
+                batches = list(executor.map(review_chunk, chunks))
+        else:
+            batches = [review_chunk(chunk) for chunk in chunks]
+        if self.before_model_call:
+            self.before_model_call("校验全文回查证据")
+        review = {"status": "complete", "total_chunks": len(chunks), "reviewed_chunks": 0,
+                  "failed_chunks": [], "added_code_ids": [], "findings": []}
+        seen = {evidence_key(code): code for code in matched_codes(codes)}
+        next_id = max((code.code_id for code in codes), default=-1) + 1
+        for chunk_id, findings, error_type in batches:
+            if error_type:
+                review["failed_chunks"].append({"chunk_id": chunk_id, "error_type": error_type})
+                continue
+            review["reviewed_chunks"] += 1
+            for kind, reason, code in findings:
+                code.source = SourceMetadata.model_validate(self.source_metadata)
+                key = evidence_key(code) if is_matched(code) else None
+                existing = seen.get(key) if key is not None else None
+                if existing is not None:
+                    code = existing
+                else:
+                    code.code_id = next_id
+                    next_id += 1
+                    code.evidence_id = f"{code.source.source_id}:{code.code_id}"
+                    codes.append(code)
+                    if is_matched(code):
+                        review["added_code_ids"].append(code.code_id)
+                        seen[key] = code
+                note = f"全文回查 · {kind}：{reason}"
+                if note not in code.note:
+                    code.note = "；".join(filter(None, (code.note, note)))
+                review["findings"].append({"chunk_id": chunk_id, "kind": kind, "reason": reason,
+                                           "code_id": code.code_id, "evidence_status": code.evidence_status})
+        if review["failed_chunks"]:
+            review["status"] = "partial" if review["reviewed_chunks"] else "failed"
+        self.corpus_review_findings = [item for item in review["findings"] if item["evidence_status"] == "matched"]
+        return review
 
     def _request_themes(self, prompt: str, stage: str) -> Dict[str, Any]:
         if self.before_model_call:
@@ -522,7 +622,8 @@ class GenerationAgent:
         return json.loads(response.choices[0].message.content)
 
     def run(self, transcript: str, save_path: str = None, previous_codes=None,
-            source_metadata=None, confirmed_decisions=None) -> Dict[str, Any]:
+            source_metadata=None, confirmed_decisions=None, source_documents=None,
+            corpus_review=False) -> Dict[str, Any]:
         """
         Run the complete generation pipeline: chunking -> coding -> theme generation.
 
@@ -533,6 +634,7 @@ class GenerationAgent:
         Returns:
             Dictionary containing chunks, codes, and themes
         """
+        self.corpus_review_findings = []
         print("Step 1/5: Chunking transcript...")
         chunks = self.chunk_transcript(transcript)
         print(f"  Generated {len(chunks)} chunks")
@@ -550,6 +652,8 @@ class GenerationAgent:
             code.source = source.model_copy(deep=True)
             code.evidence_id = f"{source.source_id}:{code.code_id}"
         codes = prior + codes
+        documents = source_documents or [source_document(source.source_id, transcript)]
+        validate_evidence(codes, documents)
         apply_decisions(codes, confirmed_decisions)
         print(f"  Generated {len(codes)} codes")
 
@@ -565,6 +669,16 @@ class GenerationAgent:
         print("Step 5/5: Generating themes from codes...")
         themes = self.generate_themes(codes)
         print(f"  Generated {len(themes)} themes")
+        initial_num_themes = len(themes)
+        review = {"status": "disabled", "total_chunks": len(chunks), "reviewed_chunks": 0,
+                  "failed_chunks": [], "added_code_ids": [], "findings": []}
+        if corpus_review:
+            review = self.review_corpus(chunks, codes, themes)
+            validate_evidence(codes, documents)
+            if review["added_code_ids"]:
+                codes = self.consolidate_codebook(codes)
+                code_map = self.map_codes(codes)
+                themes = self.generate_themes(codes)
 
         result = {
             "chunks": [chunk.model_dump() for chunk in chunks],
@@ -575,6 +689,8 @@ class GenerationAgent:
             "code_map": self.code_map,
             "code_memos": self.code_memos,
             "chunking": self.last_chunk_plan.to_dict() if self.last_chunk_plan else None,
+            "initial_num_themes": initial_num_themes,
+            "corpus_review": review,
         }
 
         # Save intermediate results if path provided

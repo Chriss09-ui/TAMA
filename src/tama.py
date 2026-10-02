@@ -25,6 +25,7 @@ from memos import (
     render_memos_markdown,
 )
 from next_data_plan import build_next_data_plan
+from evidence import link_themes_to_codes, matched_codes, source_document, validate_documents, validate_evidence
 from prompts import ENTERPRISE_CRITERIA
 from reporting import render_summary_text
 from research_profile import resolve_profile
@@ -32,36 +33,6 @@ from research_records import (
     AnalyticDecision, SourceMetadata, build_workspace, continuation_context,
     decisions_for_model, prepare_previous_result, render_research_records,
 )
-
-
-def link_themes_to_codes(themes, codes):
-    """Keep theme references tied to existing codes after model refinement."""
-    code_by_id = {code.get("code_id"): code for code in codes if isinstance(code.get("code_id"), int)}
-    ids_by_description = {}
-    for code_id, code in code_by_id.items():
-        ids_by_description.setdefault(code.get("description"), []).append(code_id)
-    linked = []
-    for original in themes:
-        theme = dict(original)
-        ids = [code_id for code_id in theme.get("code_ids", []) if code_id in code_by_id]
-        if not ids:
-            ids = [
-                code_id for description in theme.get("codes", [])
-                for code_id in ids_by_description.get(description, [])
-            ]
-        theme["code_ids"] = list(dict.fromkeys(ids))
-        theme["counterexample_code_ids"] = list(dict.fromkeys(
-            code_id for code_id in theme.get("counterexample_code_ids", [])
-            if code_id in code_by_id
-        ))
-        theme["codes"] = [code_by_id[code_id]["description"] for code_id in theme["code_ids"]]
-        theme["open_questions"] = list(theme.get("open_questions") or [])
-        theme["kind"] = theme.get("kind") or "pattern"
-        if not theme["code_ids"]:
-            theme["kind"] = "evidence_gap"
-            theme["open_questions"].append("该发现缺少可追溯的原始编码，需人工核对。")
-        linked.append(theme)
-    return linked
 
 
 class ThreadlineFramework:
@@ -92,6 +63,7 @@ class ThreadlineFramework:
         focus_areas: Optional[list[str]] = None,
         early_stop_patience: int = 2,
         analysis_mode: str = "thematic",
+        corpus_review: bool = True,
     ):
         """
         Initialize Threadline Framework.
@@ -113,13 +85,17 @@ class ThreadlineFramework:
             profile: generic or enterprise_evidence prompt and rubric profile
             research_question: Optional study question injected into prompts
             focus_areas: Optional focus labels injected into prompts
+            corpus_review: Check the submitted full text once before scoring themes
             early_stop_patience: Consecutive non-improving evaluations before stopping
         """
         self.api_key = api_key
         if max_iterations < 1:
             raise ValueError("max_iterations must be positive")
+        if not isinstance(corpus_review, bool):
+            raise ValueError("corpus_review must be a boolean")
         self.model = model
         self.max_iterations = max_iterations
+        self.corpus_review = corpus_review
         self.acceptance_threshold = acceptance_threshold
         self.output_dir = output_dir
         self.chunk_size = chunk_size
@@ -199,6 +175,8 @@ class ThreadlineFramework:
         if case_id and not source.case_id:
             source.case_id = case_id.strip()
         source.source_id = source.source_id or uuid.uuid4().hex
+        documents = validate_documents((previous_result or {}).get("source_documents") or [])
+        documents.append(source_document(source.source_id, transcript))
         if any((code.get("source") or {}).get("source_id") == source.source_id for code in previous_codes):
             raise ValueError("新资料编号与前轮重复，请为这份新资料使用独立编号")
         current_study = replace(
@@ -239,11 +217,14 @@ class ThreadlineFramework:
         generation_result = self.generation_agent.run(
             transcript, save_path=generation_path, source_metadata=source.model_dump(),
             previous_codes=previous_codes, confirmed_decisions=decisions,
+            source_documents=documents, corpus_review=self.corpus_review,
         )
         current_storyline = generation_result.get("analytic_storyline") or ""
 
-        themes = link_themes_to_codes(generation_result["themes"], generation_result["codes"])
         codes = generation_result["codes"]
+        validate_evidence(codes, documents)
+        themes = link_themes_to_codes(generation_result["themes"], codes)
+        review = generation_result.get("corpus_review") or {"status": "disabled", "findings": []}
         code_map = generation_result.get("code_map")
         themes = attach_category_names(themes, codes, code_map)
         memos = build_theme_memos(themes, iteration=0)
@@ -258,8 +239,12 @@ class ThreadlineFramework:
         stagnant_rounds = 0
         stop_reason = "max_iterations"
         retired_findings = []
-
-        while not is_acceptable and iteration < self.max_iterations:
+        evaluation_result = {"theme_evaluations": [], "average_score": None,
+                             "is_acceptable": False, "global_feedback": "没有可评估的有效证据或主题；未评分。"}
+        eligible = matched_codes(codes)
+        while eligible and themes and not is_acceptable and iteration < self.max_iterations:
+            if not any(theme.get("code_ids") and theme.get("kind") != "evidence_gap" for theme in themes):
+                break
             iteration += 1
 
             print("\n" + "=" * 80)
@@ -278,7 +263,7 @@ class ThreadlineFramework:
 
             evaluation_result = self.evaluation_agent.run(
                 themes=themes,
-                codes=codes,
+                codes=eligible,
                 save_path=eval_path,
                 acceptance_threshold=self.acceptance_threshold,
             )
@@ -288,7 +273,8 @@ class ThreadlineFramework:
             print(f"  Acceptable: {evaluation_result['is_acceptable']}")
             print(f"  Feedback: {evaluation_result['global_feedback']}")
 
-            is_acceptable = evaluation_result["is_acceptable"]
+            is_acceptable = evaluation_result["is_acceptable"] and all(
+                theme.get("code_ids") and theme.get("kind") != "evidence_gap" for theme in themes)
             score = evaluation_result["average_score"]
             score_history.append({"iteration": iteration, "average_score": score})
             if score > best_score + 0.05:
@@ -326,7 +312,7 @@ class ThreadlineFramework:
             refinement_result = self.refinement_agent.run(
                 themes=themes,
                 evaluation_results=evaluation_result,
-                codes=codes,
+                codes=eligible,
                 save_path=refinement_path,
                 memos=memos_for_model(memos),
             )
@@ -360,6 +346,14 @@ class ThreadlineFramework:
 
             print(f"\nPreparing for iteration {iteration + 1}...")
 
+        if evaluation_result["average_score"] is None:
+            stop_reason = "no_valid_evidence" if not eligible else "no_valid_themes"
+        if self.corpus_review and review["status"] != "complete":
+            is_acceptable = False
+            stop_reason = "corpus_review_incomplete"
+        if before_model_call:
+            before_model_call("整理本次结果")
+
         # Phase 3: Finalize Results
         print("\n" + "=" * 80)
         print("FINALIZING RESULTS")
@@ -389,11 +383,12 @@ class ThreadlineFramework:
                 "save_final": save_final,
                 "save_intermediate": save_intermediate,
                 "analysis_mode": self.study.analysis_mode,
+                "corpus_review": self.corpus_review,
             },
             "generation": {
                 "num_chunks": len(generation_result["chunks"]),
                 "num_codes": len(codes),
-                "initial_num_themes": len(generation_result["themes"]),
+                "initial_num_themes": generation_result.get("initial_num_themes", len(generation_result["themes"])),
                 "chunking": generation_result.get("chunking"),
                 "analytic_storyline": generation_result.get("analytic_storyline", ""),
                 "codebook_note": generation_result.get("codebook_note", ""),
@@ -406,6 +401,8 @@ class ThreadlineFramework:
             "stop_reason": stop_reason,
             "refinement_history": refinement_history,
             "codes": codes,
+            "source_documents": documents,
+            "corpus_review": review,
             "final_themes": themes,
             "memos": memos,
             "next_data_plan": build_next_data_plan(codes, themes, memos),
@@ -419,12 +416,14 @@ class ThreadlineFramework:
             "accepted": is_acceptable,
             "metadata": {
                 "total_themes": len(themes),
+                "valid_code_count": len(eligible),
+                "pending_code_count": len(codes) - len(eligible),
                 "final_average_score": evaluation_result["average_score"]
             }
         }
         final_result["next_data_plan"] = build_next_data_plan(
             codes, [*themes, *(item["theme"] for item in retired_findings)], memos,
-            final_result["research_workspace"],
+            final_result["research_workspace"], review,
         )
         if session_dir:
             final_result["output_dir"] = session_dir
@@ -435,7 +434,8 @@ class ThreadlineFramework:
                 json.dump(final_result, f, indent=2, ensure_ascii=False)
             print(f"\n✓ Final results saved to: {final_path}")
         print(f"\n  Total themes: {len(themes)}")
-        print(f"  Final score: {evaluation_result['average_score']:.2f}/5.0")
+        score = evaluation_result["average_score"]
+        print(f"  Final score: {score if score is not None else 'not scored'}")
         print(f"  Iterations: {iteration}")
         print(f"  Status: {stop_reason.upper()}")
 
@@ -472,14 +472,14 @@ class ThreadlineFramework:
         with open(os.path.join(session_dir, "05_codebook.md"), "w", encoding="utf-8") as handle:
             handle.write(render_codebook(codes))
         with open(os.path.join(session_dir, "06_code_map.md"), "w", encoding="utf-8") as handle:
-            handle.write(render_code_map(code_map, codes))
+            handle.write(render_code_map(code_map, matched_codes(codes)))
         with open(os.path.join(session_dir, "07_code_landscape.md"), "w", encoding="utf-8") as handle:
-            handle.write(render_code_landscape(codes, code_map))
+            handle.write(render_code_landscape(matched_codes(codes), code_map))
         with open(os.path.join(session_dir, "next_data_plan.md"), "w", encoding="utf-8") as handle:
             handle.write(plan.get("markdown") or "")
         with open(os.path.join(session_dir, "08_research_records.md"), "w", encoding="utf-8") as handle:
             handle.write(render_research_records(result["research_workspace"]))
-        print(f"✓ Memos, codebook, code map, and next-round plan saved to: {session_dir}")
+        print(f"✓ Memos, codebook, code map, and material checks saved to: {session_dir}")
 
     def _save_readable_summary(self, session_dir: str, result: Dict[str, Any]):
         """Save a human-readable summary of the analysis."""

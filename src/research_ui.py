@@ -9,18 +9,18 @@ from pydantic import ValidationError
 from next_data_plan import build_next_data_plan
 from research_records import (
     AnalyticDecision, ArgumentRecord, CategoryRecord, ComparisonRecord, Relationship,
-    SamplingTask, SourceMetadata, StudyReview, continuation_context, prepare_previous_result,
+    SourceMetadata, StudyReview,
     recorded_now, render_research_records, validate_workspace,
 )
 
 
 def research_inputs(current_result, running):
     options, error = {}, None
-    with st.expander("来源与持续研究（选填）"):
+    with st.expander("本次材料来源与分析方式（选填）"):
         mode = st.selectbox("分析方式", ["主题分析", "建构扎根理论支持"], key="analysis_mode", disabled=running)
         if mode == "建构扎根理论支持":
             options["analysis_mode"] = "grounded_theory"
-            st.caption("记录比较、类属发展与抽样目的；充分性由研究者判断。")
+            st.caption("记录本次材料的比较、类属发展与解释；充分性由研究者判断。")
         values = {}
         for field, label in (("source_id", "本份资料编号"), ("participant_id", "参与者匿名编号（单一参与者时填写）"),
                              ("recorded_at", "资料产生时间"), ("setting", "场景或地点"), ("event_id", "事件编号")):
@@ -31,52 +31,6 @@ def research_inputs(current_result, running):
         st.caption("资料包含多个参与者时可留空参与者编号，逐条证据另显示材料中明确的说话人标签。")
         if any(value for key, value in values.items() if key != "data_type") or values["data_type"] != "访谈":
             options["source_metadata"] = SourceMetadata(**values).model_dump()
-        usable = bool(current_result and current_result.get("codes"))
-        use_current = st.checkbox("接续当前结果，加入本轮新资料", key="continue_current_research",
-                                  disabled=running or not usable)
-        uploaded = st.file_uploader("或载入前一轮完整结果 JSON", type=["json"], key="previous_research_json", disabled=running)
-        previous = current_result if use_current and usable else None
-        if uploaded is not None:
-            if previous is not None:
-                error = "当前结果与上传结果请只选择一个作为前轮资料。"
-            else:
-                try:
-                    previous = json.loads(uploaded.getvalue().decode("utf-8-sig"))
-                except (ValueError, UnicodeDecodeError):
-                    error = "前轮结果无法读取，请使用保存完整数据得到的 JSON。"
-        if previous is not None and error is None:
-            try:
-                codes, workspace = prepare_previous_result(previous)
-            except (ValueError, TypeError, KeyError):
-                error = "前轮结果格式或证据编号无效，请使用完整的 Threadline 结果。"
-            else:
-                options["previous_result"] = previous
-                scope = f"{workspace.project_id}:{workspace.round_id}"
-                if st.session_state.get("_previous_research_scope") != scope:
-                    for key in ("submitted_analysis_decisions", "confirm_submit_decisions", "include_previous_context"):
-                        st.session_state.pop(key, None)
-                    st.session_state["_previous_research_scope"] = scope
-                st.caption(f"已载入 {len(codes)} 条编码；新资料将进入第 {len(workspace.rounds) + 1} 轮。")
-                context = st.checkbox("将前轮类属、比较与抽样记录用于本轮分析", key="include_previous_context", disabled=running)
-                if context:
-                    options["include_previous_context"] = True
-                    st.caption("下面显示本轮会提交的分析记录；私人手记和自反记录不在其中。")
-                    st.json(json.loads(continuation_context(workspace)), expanded=False)
-                confirmed = {item.decision_id: item for item in workspace.decisions if item.confirmed}
-                selected = st.multiselect("本轮要提交的已确认分析决定", list(confirmed),
-                                          format_func=lambda key: f"{confirmed[key].action}：{confirmed[key].text}",
-                                          key="submitted_analysis_decisions", disabled=running,
-                                          on_change=lambda: st.session_state.update(confirm_submit_decisions=False))
-                for key in selected:
-                    st.write(f"{confirmed[key].text}；编码 {confirmed[key].code_ids}；理由：{confirmed[key].reason}")
-                if selected:
-                    consent = st.checkbox("确认将上面选定的决定用于本轮模型分析", key="confirm_submit_decisions", disabled=running)
-                    if consent:
-                        options["confirmed_decisions"] = [confirmed[key].model_dump() for key in selected]
-                    else:
-                        error = "选定的分析决定尚未确认提交；请确认或取消选择。"
-        if error:
-            st.warning(error)
     return options, error
 
 
@@ -86,7 +40,7 @@ def save_workspace(result, workspace, root):
     result["next_data_plan"] = build_next_data_plan(result.get("codes"),
                                                     [*(result.get("final_themes") or []),
                                                      *(item["theme"] for item in result.get("retired_findings") or [])],
-                                                    result.get("memos"), result["research_workspace"])
+                                                    result.get("memos"), result["research_workspace"], result.get("corpus_review"))
     if result.get("configuration", {}).get("save_final") and result.get("output_dir"):
         # Imported output paths never control writes; only this app's output tree is writable here.
         expected = (Path(root) / "outputs" / str(result.get("session_name") or "")).resolve()
@@ -149,7 +103,7 @@ def _comparison_editor(result, workspace, root):
             fields = {}
             for field, label in (("similarities", "相同之处"), ("differences", "不同之处"),
                                  ("conditions", "与差异有关的条件"), ("implication", "这次比较改变了什么理解"),
-                                 ("open_question", "接下来要追问什么")):
+                                 ("open_question", "当前材料还有哪些核查点")):
                 fields[field] = st.text_area(label, key=f"comparison_{field}")
             researcher = st.text_input("记录研究者（可用代号）", key="comparison_researcher")
             if st.form_submit_button("保存比较记录"):
@@ -177,7 +131,7 @@ def _comparison_editor(result, workspace, root):
 
 def _decision_editor(result, workspace, root):
     with st.expander("记录分析决定与聚焦代码"):
-        st.caption("这里只保存决定；在下一轮选中并确认提交后才进入模型。私人手记仍不提交。")
+        st.caption("这里只保存本次分析决定，不发送模型请求。私人手记仍保持独立。")
         with st.form("analysis_decision_form"):
             action = st.selectbox("决定类型", ["保持分开", "修改定义", "聚焦编码", "否决解释", "分析方向"], key="decision_action")
             ids = _code_picker("关联编码", result.get("codes") or [], "decision_code_ids")
@@ -203,7 +157,7 @@ def _decision_editor(result, workspace, root):
 
 def _category_editor(result, workspace, root):
     with st.expander("发展类属与记录充分性判断"):
-        st.caption("这些分析记录先保存在本轮结果；下一轮勾选使用前轮分析记录时才会提交。私人反思请写在自反栏。")
+        st.caption("这些记录保存在本次结果中，不发送模型请求。私人反思请写在自反栏。")
         categories = {item.category_id: item for item in workspace.categories}
         if not categories:
             st.info("本轮尚无候选类属；可先记录比较与聚焦代码。")
@@ -235,40 +189,6 @@ def _category_editor(result, workspace, root):
                     _save(result, workspace, root)
         if original.history:
             st.json(original.history, expanded=False)
-
-
-def _sampling_editor(result, workspace, root):
-    with st.expander("计划补充资料并回填分析后果"):
-        existing = {item.task_id: item for item in workspace.sampling_tasks}
-        selected = st.selectbox("资料任务", ["新任务", *existing],
-                                format_func=lambda key: key if key == "新任务" else existing[key].target,
-                                key="sampling_task_selection")
-        previous = existing.get(selected)
-        defaults = previous.model_dump() if previous else {}
-        categories = {item.category_id: item for item in workspace.categories}
-        with st.form(f"sampling_form_{selected}"):
-            kinds = ["一般核查", "理论抽样"]
-            fields = {"kind": st.selectbox("任务目的", kinds, index=kinds.index(defaults.get("kind", "一般核查")), key=f"task_{selected}_kind")}
-            category_options = ["", *categories]
-            fields["category_id"] = st.selectbox("要发展的类属", category_options,
-                index=category_options.index(defaults.get("category_id", "")),
-                format_func=lambda key: categories[key].name if key else "未关联（一般核查可留空）", key=f"task_{selected}_category")
-            for field, label in (("gap", "要补充的属性、关系或事实缺口"), ("alternatives", "需要区分的不同解释"),
-                                 ("target", "要寻找的人、事件或资料"), ("rationale", "为什么选择这些资料"),
-                                 ("questions", "开放追问"), ("expected_change", "哪些新观察会改变现有理解"),
-                                 ("outcome", "收集后得到什么，怎样修改分析")):
-                fields[field] = st.text_area(label, value=defaults.get(field, ""), key=f"task_{selected}_{field}")
-            statuses = ["计划中", "已收集", "已分析"]
-            fields["status"] = st.selectbox("任务进展", statuses, index=statuses.index(defaults.get("status", "计划中")), key=f"task_{selected}_status")
-            fields["researcher"] = st.text_input("任务研究者", value=defaults.get("researcher", ""), key=f"task_{selected}_researcher")
-            if st.form_submit_button("保存资料任务"):
-                try:
-                    task = SamplingTask.model_validate({**defaults, **fields, "date": recorded_now()})
-                except ValidationError:
-                    st.error("请填写缺口、目标、选择理由和研究者；理论抽样需关联类属与预期改变，已分析需回填后果。")
-                else:
-                    workspace.sampling_tasks = [item for item in workspace.sampling_tasks if item.task_id != task.task_id] + [task]
-                    _save(result, workspace, root)
 
 
 def _argument_editor(result, workspace, root):
@@ -346,8 +266,8 @@ def render_research_tools(result, root):
             if (key.startswith(prefixes) and key != "decision_mode") or key == "sampling_task_selection":
                 st.session_state.pop(key, None)
         st.session_state["_research_editor_round"] = workspace.round_id
-    st.subheader("持续研究记录")
-    st.caption(f"第 {workspace.round_number} 轮 · 新资料加入后可重新比较与修改解释；这些表单不会发送模型请求。")
+    st.subheader("本次研究记录")
+    st.caption("比较本次材料中的证据并记录研究者判断；这些表单不会发送模型请求。")
     notice = st.session_state.pop("research_record_notice", None)
     if notice:
         st.success(notice)
@@ -357,5 +277,4 @@ def render_research_tools(result, root):
     _decision_editor(result, workspace, root)
     if result.get("configuration", {}).get("analysis_mode") == "grounded_theory":
         _category_editor(result, workspace, root)
-        _sampling_editor(result, workspace, root)
         _argument_editor(result, workspace, root)

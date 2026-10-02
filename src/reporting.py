@@ -1,7 +1,8 @@
 """Research-report text shared by the Word download and the text summary."""
 
+from evidence import EVIDENCE_LABELS, REVIEW_KIND_LABELS, is_matched, matched_codes
 from code_mapping import render_code_landscape
-from next_data_plan import build_next_data_plan
+from next_data_plan import GROUP_ORDER, build_next_data_plan, material_review_text
 from reflexivity import REFLEXIVITY_CHECKS, REFLEXIVITY_FIELDS
 from research_records import render_research_records
 
@@ -61,7 +62,7 @@ def _take_quotes(code_ids, code_by_id, used, limit):
         if len(taken) >= limit:
             break
         code = code_by_id.get(code_id)
-        if not code:
+        if not code or not is_matched(code):
             continue
         excerpt = str(code.get("excerpt") or "").strip()
         if not excerpt or excerpt in used:
@@ -223,7 +224,7 @@ def _theme_lines(result, packs, interpretations):
         lines.append(("h3", "未决问题"))
         questions = []
         for question in [*pack["open_questions"], pack["uncertain"]]:
-            text = str(question or "").strip()
+            text = material_review_text(question)
             if text and text not in questions:
                 questions.append(text)
         for code_id in pack["code_ids"]:
@@ -252,6 +253,7 @@ def _codebook_lines(result):
         label = code.get("name") or code.get("description")
         lines.append(("h2", f"[{code.get('code_id')}] {label}"))
         lines.append(("p", f"方法：{code.get('method') or '过程编码'}"))
+        lines.append(("p", f"原文匹配：{EVIDENCE_LABELS.get(code.get('evidence_status'), '尚未核验')}"))
         lines.append(("p", f"定义：{code.get('definition') or '（尚未写定义）'}"))
         related = [code_id for code_id in code.get("related_code_ids") or [] if isinstance(code_id, int)]
         if related:
@@ -275,11 +277,11 @@ def _plan_lines(result):
             result.get("codes"), result.get("final_themes"), result.get("memos"),
         )
     groups = plan.get("groups") or {}
-    lines = [("h1", "下一轮可以收集什么")]
+    lines = [("h1", "当前材料复核")]
     if not any(groups.values()):
         lines.append(("p", "这次没有留下待核查问题。"))
         return lines
-    for name in ("需补访角色", "需查材料", "需核对信息"):
+    for name in GROUP_ORDER:
         entries = groups.get(name) or []
         if not entries:
             continue
@@ -308,7 +310,7 @@ def _focus_lines():
 
 def _landscape_lines(result):
     code_map = result.get("code_map") or (result.get("generation") or {}).get("code_map")
-    text = render_code_landscape(result.get("codes"), code_map)
+    text = render_code_landscape(matched_codes(result.get("codes")), code_map)
     lines = []
     for raw in text.splitlines():
         if raw.startswith("# "):
@@ -355,6 +357,8 @@ def report_lines(result, reflexivity=None, interpretations=None):
     lines.append(("p", f"状态：{status}"))
     if isinstance(score, (int, float)):
         lines.append(("p", f"平均分：{score:.2f} / 5"))
+    else:
+        lines.append(("p", "平均分：未评分"))
     if result.get("refinement_iterations") is not None:
         lines.append(("p", f"评估轮次：{result['refinement_iterations']}"))
     lines.append(("p", "分数衡量主题是否像一个有证据的模式。候选机制和诠释仍要由研究者自己写、自己判断。"))
@@ -368,6 +372,20 @@ def report_lines(result, reflexivity=None, interpretations=None):
     note = (result.get("generation") or {}).get("codebook_note")
     if note:
         lines.append(("p", note))
+    review = result.get("corpus_review") or {}
+    if review:
+        labels = {"complete": "完成", "partial": "部分完成", "failed": "失败", "disabled": "已关闭"}
+        lines.append(("h1", "全文回查"))
+        lines.append(("p", f"状态：{labels.get(review.get('status'), '未知')}；已检查 {review.get('reviewed_chunks', 0)} / {review.get('total_chunks', 0)} 个片段"))
+        for finding in review.get("findings") or []:
+            lines.append(("bullet", f"编码 [{finding['code_id']}] · {REVIEW_KIND_LABELS.get(finding['kind'], finding['kind'])} · {material_review_text(finding['reason'])}"))
+        if review.get("status") in ("partial", "failed"):
+            lines.append(("p", "全文回查未完整完成；分数不能代替未完成片段的检查。"))
+    pending = [code for code in result.get("codes") or [] if not is_matched(code)]
+    if pending:
+        lines.append(("h1", "待核查编码（不作为主题证据）"))
+        for code in pending:
+            lines.append(("bullet", f"[{code['code_id']}] {code.get('name') or code.get('description')}；{EVIDENCE_LABELS.get(code.get('evidence_status'), '尚未核验')}；{material_review_text(code.get('open_question'))}"))
     lines.extend(_reflexivity_lines(reflexivity))
     evaluation = result.get("final_evaluation") or {}
     if evaluation.get("global_feedback"):

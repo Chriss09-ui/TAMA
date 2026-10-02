@@ -11,13 +11,13 @@
 
 ## Introduction
 
-Threadline automates qualitative thematic analysis of clinical interview transcripts using three specialized AI agents:
+Threadline automates qualitative thematic analysis of already collected interview transcripts using three specialized AI agents:
 
 - **Generation Agent**: Creates initial themes from transcript
 - **Evaluation Agent**: Assesses theme quality using four criteria
 - **Refinement Agent**: Improves themes based on feedback
 
-The framework iterates until themes meet quality standards or maximum iterations are reached.
+Each submission is an independent analysis that produces one report. After initial coding, a single full-text review checks missed support, counterexamples and context limits before the existing evaluation cycle. The web interface does not provide cross-run continuation or sampling tasks.
 
 ## Basic Usage
 
@@ -85,6 +85,7 @@ framework = ThreadlineFramework(
     # Quality control
     acceptance_threshold=4.0,  # Min score (1.0-5.0) to accept themes
     max_iterations=5,          # Max refinement cycles
+    corpus_review=True,        # One full-text review; enabled by default
 
     # Output settings
     output_dir="outputs",      # Where to save results
@@ -481,3 +482,11 @@ framework = ThreadlineFramework(
 
 - **Installation Guide**: [INSTALLATION.md](INSTALLATION.md)
 - **Example Script**: [example_usage.py](example_usage.py)
+
+## Evidence and full-text review
+
+Only codes whose excerpts and character offsets match the submitted original are eligible for generation and scoring. Unmatched or missing excerpts remain in the result as pending records. A genuine participant statement remains eligible even when it has not been externally verified.
+
+Full-text review runs once per submission and can be disabled with corpus_review=False. Verified new findings are added and candidate themes updated automatically. Review failures are explicit; a partial or failed enabled review cannot pass the overall analysis. An analysis with no valid evidence returns a savable result with final_average_score set to null, displayed as unscored.
+
+The complete JSON includes source_documents (normalized text, source ID and SHA-256), corpus_review (status, chunk counts, added IDs and findings), and code evidence_status. Word does not include the entire original. Set both save_final=False and save_intermediate=False to avoid creating an output directory.

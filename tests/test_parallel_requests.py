@@ -7,6 +7,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
+from evidence_fixtures import matched_code
 from agents.evaluation_agent import EvaluationAgent, EvaluationResult
 from agents.generation_agent import Chunk, Code, GenerationAgent
 from analysis_job import AnalysisJob
@@ -39,7 +40,7 @@ class ParallelRequestTests(unittest.TestCase):
             agent = EvaluationAgent(api_key="test", max_workers=3)
         barrier = Barrier(3, timeout=3)
         last_finished = Event()
-        themes = [{"name": f"主题 {i}", "description": "描述", "codes": []} for i in range(3)]
+        themes = [{"name": f"主题 {i}", "description": "描述", "codes": [], "code_ids": [i]} for i in range(3)]
 
         def evaluate(theme, all_themes, original_codes):
             barrier.wait()
@@ -56,7 +57,7 @@ class ParallelRequestTests(unittest.TestCase):
             )
 
         with patch.object(agent, "evaluate_theme", side_effect=evaluate):
-            result = agent.evaluate_all_themes(themes, [])
+            result = agent.evaluate_all_themes(themes, [matched_code(code_id=i, description=f"编码{i}").model_dump() for i in range(3)])
 
         self.assertEqual([item.theme_name for item in result.theme_evaluations], [
             "主题 0", "主题 1", "主题 2",

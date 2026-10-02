@@ -20,6 +20,7 @@ APP_PATH = ROOT / "streamlit_app.py"
 sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT))
 
+from evidence_fixtures import matched_code
 from streamlit_app import KEYRING_SERVICE, api_model_name, build_result_docx, check_api_connection, read_transcript
 from analysis_job import JOB_REGISTRY
 
@@ -149,6 +150,7 @@ class StreamlitAppTests(unittest.TestCase):
             }],
         }
 
+        result["codes"] = [matched_code(**code).model_dump() for code in result["codes"]]
         document = Document(BytesIO(build_result_docx(result)))
         paragraphs = "\n".join(paragraph.text for paragraph in document.paragraphs)
         for expected in ("证据缺口", "合同在法务部门", "仅有受访者陈述", "需向法务核查", "公开状态待查"):
@@ -266,7 +268,7 @@ class StreamlitAppTests(unittest.TestCase):
             chunk_size=600,
             chunk_strategy="manual",
             max_workers=2,
-            max_iterations=5,
+            max_iterations=5, corpus_review=True,
             decision_provider=None,
             confidence_threshold=0.7,
             output_dir=str(ROOT / "outputs"),
@@ -330,7 +332,7 @@ class StreamlitAppTests(unittest.TestCase):
             chunk_size=None,
             chunk_strategy="balanced",
             max_workers=4,
-            max_iterations=5,
+            max_iterations=5, corpus_review=True,
             decision_provider=None,
             confidence_threshold=0.7,
             output_dir=str(ROOT / "outputs"),
@@ -510,7 +512,7 @@ class StreamlitAppTests(unittest.TestCase):
             api_key="saved-test-key", model="deepseek-flash",
             base_url="https://api.deepseek.com", chunk_size=None,
             chunk_strategy="balanced",
-            max_workers=4, max_iterations=5,
+            max_workers=4, max_iterations=5, corpus_review=True,
             decision_provider=None, confidence_threshold=0.7,
             output_dir=str(ROOT / "outputs"),
             profile="generic", research_question="", focus_areas=None,
@@ -611,7 +613,7 @@ class StreamlitAppTests(unittest.TestCase):
             api_key="test-key", model="deepseek-flash",
             base_url="https://api.deepseek.com", chunk_size=None,
             chunk_strategy="balanced",
-            max_workers=4, max_iterations=5,
+            max_workers=4, max_iterations=5, corpus_review=True,
             decision_provider=jev_client_cls.return_value,
             confidence_threshold=0.7,
             output_dir=str(ROOT / "outputs"),

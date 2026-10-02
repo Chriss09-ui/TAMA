@@ -27,6 +27,7 @@ threadline/
 │   ├── __init__.py                 # Package initialization
 │   ├── tama.py                     # Main Threadline orchestrator
 │   ├── chunking.py                 # Dynamic sizing and natural-boundary splitting
+│   ├── evidence.py                 # Original-text verification and eligible references
 │   │
 │   ├── agents/                     # Multi-agent components
 │   │   ├── __init__.py

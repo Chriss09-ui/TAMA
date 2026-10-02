@@ -26,6 +26,7 @@ from prompts import (
     build_full_evaluation_prompt,
 )
 from research_profile import ResearchProfile
+from evidence import link_themes_to_codes, matched_codes
 
 
 class EvaluationCriteria(BaseModel):
@@ -63,7 +64,7 @@ class EvaluationResult(BaseModel):
 class OverallEvaluation(BaseModel):
     """Overall evaluation of all themes."""
     theme_evaluations: List[EvaluationResult]
-    average_score: float
+    average_score: Optional[float]
     is_acceptable: bool
     global_feedback: str
 
@@ -154,6 +155,10 @@ class EvaluationAgent:
         Returns:
             EvaluationResult object
         """
+        theme = link_themes_to_codes([theme], original_codes)[0]
+        all_themes = link_themes_to_codes(all_themes, original_codes)
+        if not theme.get("code_ids") or theme.get("kind") == "evidence_gap":
+            raise ValueError("主题没有可评分的原文支持")
         if self.decision_provider is not None:
             return self._evaluate_theme_with_decisions(theme, all_themes, self._compact_codes(theme, original_codes))
         return self._evaluate_theme_full(theme, all_themes, self._compact_codes(theme, original_codes))
@@ -170,10 +175,10 @@ class EvaluationAgent:
                 **({"statement_type": code.get("statement_type")} if code.get("code_id") in linked and code.get("statement_type") else {}),
                 **({"focus": code.get("focus")} if code.get("code_id") in linked and code.get("focus") else {}),
                 **({"open_question": code.get("open_question")} if code.get("code_id") in linked and code.get("open_question") else {}),
-                **({"source": code.get("source") or {}, "context": code.get("context") or ""}
+                **({"source": code.get("source") or {}, "context": code.get("context") or "", "note": code.get("note") or ""}
                    if code.get("code_id") in linked else {}),
             }
-            for code in codes
+            for code in matched_codes(codes)
         ]
 
     def _evaluate_theme_with_decisions(
@@ -411,21 +416,27 @@ class EvaluationAgent:
         print("\nEvaluating themes...")
         if not themes:
             raise ValueError("没有可评估的主题；请检查主题生成结果。")
+        original_codes = matched_codes(original_codes)
+        themes = link_themes_to_codes(themes, original_codes)
+        supported = [theme for theme in themes if theme.get("code_ids") and theme.get("kind") != "evidence_gap"]
+        if not supported:
+            return OverallEvaluation(theme_evaluations=[], average_score=None, is_acceptable=False,
+                                     global_feedback="没有可评分的原文支持；未评分。")
 
         def evaluate_indexed(item):
             idx, theme = item
             print(f"  Evaluating theme {idx + 1}/{len(themes)}: {theme['name']}")
             return self.evaluate_theme(theme, themes, original_codes)
 
-        if len(themes) > 1 and self.max_workers > 1:
-            with ThreadPoolExecutor(max_workers=min(self.max_workers, len(themes))) as executor:
-                theme_evaluations = list(executor.map(evaluate_indexed, enumerate(themes)))
+        if len(supported) > 1 and self.max_workers > 1:
+            with ThreadPoolExecutor(max_workers=min(self.max_workers, len(supported))) as executor:
+                theme_evaluations = list(executor.map(evaluate_indexed, enumerate(supported)))
         else:
-            theme_evaluations = [evaluate_indexed(item) for item in enumerate(themes)]
+            theme_evaluations = [evaluate_indexed(item) for item in enumerate(supported)]
 
         # Calculate average score
         average_score = sum(e.overall_score for e in theme_evaluations) / len(theme_evaluations)
-        is_acceptable = average_score >= acceptance_threshold and all(
+        is_acceptable = len(supported) == len(themes) and average_score >= acceptance_threshold and all(
             not evaluation.needs_refinement
             and all(criterion_score(evaluation, key) >= acceptance_threshold for key in CRITERION_KEYS)
             for evaluation in theme_evaluations
@@ -520,7 +531,11 @@ class EvaluationAgent:
         Returns:
             Dictionary containing evaluation results
         """
+        codes = matched_codes(codes)
+        themes = link_themes_to_codes(themes, codes)
         overall_eval = self.evaluate_all_themes(themes, codes, acceptance_threshold)
+        if any(not theme.get("code_ids") or theme.get("kind") == "evidence_gap" for theme in themes):
+            overall_eval.is_acceptable = False
 
         result = {
             "theme_evaluations": [e.model_dump() for e in overall_eval.theme_evaluations],

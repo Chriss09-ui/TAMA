@@ -25,7 +25,7 @@ python example_usage.py
 
 This will:
 1. Create a sample interview transcript
-2. Run complete thematic analysis
+2. Run one independent analysis, including one full-text review by default
 3. Save results to `outputs/example_analysis/`
 
 ## Step 4: View Results
@@ -73,7 +73,8 @@ result = framework.run_analysis(
 # Print results
 print(f"\n✓ Analysis complete!")
 print(f"  Themes generated: {len(result['final_themes'])}")
-print(f"  Quality score: {result['metadata']['final_average_score']:.2f}/5.0")
+score = result["metadata"]["final_average_score"]
+print(f"  Quality score: {score if score is not None else 'unscored'}")
 print(f"  Results saved to: outputs/my_first_analysis/")
 ```
 
@@ -93,6 +94,8 @@ After running Threadline, you'll find in `outputs/[session_name]/`:
 ```
 
 📊 **00_final_results.json** - Complete analysis data
+- Submitted original text and its SHA-256 checksum
+- Full-text review status and findings
 - All themes with descriptions
 - Evaluation scores
 - Refinement history
@@ -152,7 +155,7 @@ Themes are rated 1-5 on four criteria:
 - **Distinctiveness**: Uniqueness
 - **Relevance**: Accuracy to data
 
-Average ≥4.0 typically indicates high-quality themes.
+Scores assess candidate themes, not research validity or saturation. No valid evidence produces an unscored result. Partial or failed full-text review cannot pass the overall analysis.
 
 ## Next Steps
 

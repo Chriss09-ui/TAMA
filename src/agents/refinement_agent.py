@@ -14,6 +14,7 @@ import json
 
 from prompts import REFINEMENT_SYSTEM_PROMPT, build_refinement_prompt
 from research_profile import ResearchProfile
+from evidence import link_themes_to_codes, matched_codes
 
 
 class RefinementOperation(BaseModel):
@@ -84,7 +85,8 @@ class RefinementAgent:
                 "excerpt": str(code.get("excerpt") or "")[:120],
                 "context": code.get("context") or "",
                 "source": code.get("source") or {},
-            } for code in codes],
+                "note": code.get("note") or "",
+            } for code in matched_codes(codes)],
             study=self.study,
             memos=memos,
         )
@@ -260,7 +262,7 @@ class RefinementAgent:
         print(f"Total operations: {len(plan.operations)}")
 
         print("\nApplying refinement operations...")
-        refined_themes = self.apply_refinement_plan(themes, plan)
+        refined_themes = link_themes_to_codes(self.apply_refinement_plan(themes, plan), codes)
 
         print(f"\nRefinement complete:")
         print(f"  Original themes: {len(themes)}")

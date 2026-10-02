@@ -9,6 +9,8 @@ from unittest.mock import Mock, patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from agents.evaluation_agent import EvaluationAgent
+from evidence_fixtures import matched_code
+from evidence import source_document
 from agents.generation_agent import Code, GenerationAgent
 from agents.refinement_agent import RefinementAgent, RefinementOperation, RefinementPlan
 from codebook import exact_merge, revise_definition, semantic_merge
@@ -27,7 +29,7 @@ def response(data):
 
 
 def code(code_id=0, excerpt="在内部保留资料", source_id="S1", **kwargs):
-    return Code(code_id=code_id, name="控制信息", description="控制信息", source_chunks=[0],
+    return matched_code(code_id=code_id, name="控制信息", description="控制信息", source_chunks=[0],
                 excerpt=excerpt, source_start=0, source_end=len(excerpt),
                 source=SourceMetadata(source_id=source_id), **kwargs)
 
@@ -171,8 +173,9 @@ class ContinuingStudyTests(unittest.TestCase):
         task = SamplingTask(kind="理论抽样", category_id="c1", expected_change="区分两种解释", **base)
         plan = build_next_data_plan([{"code_id": 0, "open_question": "询问负责人"}], [], [],
                                     {"sampling_tasks": [task.model_dump()]})
-        for expected in ("询问负责人", "区分两种解释", "观察不同条件"):
-            self.assertIn(expected, plan["markdown"])
+        self.assertEqual(plan["tasks"][0], task.model_dump())
+        self.assertNotIn("区分两种解释", plan["markdown"])
+        self.assertNotIn("观察不同条件", plan["markdown"])
         with self.assertRaises(ValueError):
             SamplingTask(status="已分析", **base)
 
@@ -189,11 +192,11 @@ class ContinuingStudyTests(unittest.TestCase):
         previous_workspace = ResearchWorkspace(round_id="old", rounds=[{"round_id": "old"}],
             categories=[CategoryRecord(name="权限", code_ids=[4], properties="旧属性", researcher="R1")])
         previous = {"session_name": "old", "codes": [old], "research_workspace": previous_workspace.model_dump(),
-                    "memos": [{"human_note": "不应进入模型"}]}
+                    "memos": [{"human_note": "不应进入模型"}], "source_documents": [source_document("S1", old["excerpt"])]}
         with tempfile.TemporaryDirectory() as temp, patch("tama.EvaluationAgent") as evaluator:
             evaluator.return_value.run.return_value = {"theme_evaluations": [], "average_score": 5,
                 "is_acceptable": True, "global_feedback": "主题评估通过"}
-            framework = TAMAFramework(api_key="test", output_dir=temp, analysis_mode="grounded_theory")
+            framework = TAMAFramework(api_key="test", output_dir=temp, analysis_mode="grounded_theory", corpus_review=False)
             framework.generation_agent.client = Mock()
             framework.generation_agent.client.chat.completions.create.side_effect = [
                 response({"codes": [{"name": "对外共享", "excerpt": "给客户资料", "speaker": "受访者"}]}),

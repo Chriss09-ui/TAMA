@@ -11,6 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from agents.generation_agent import Chunk, Code, GenerationAgent
+from evidence_fixtures import matched_code
 from agents.refinement_agent import RefinementAgent, RefinementOperation, RefinementPlan
 from prompts import build_code_extraction_prompt
 from research_profile import resolve_profile
@@ -24,7 +25,7 @@ def response(data):
 def generation_data():
     return {
         "chunks": ["fragment"],
-        "codes": [{"code_id": 0, "description": "编码", "excerpt": "private quote"}],
+        "codes": [matched_code(code_id=0, description="编码", excerpt="private quote").model_dump()],
         "themes": [{"name": "模式", "description": "描述", "code_ids": [0]}],
         "analytic_storyline": "一个初始分析故事线",
     }
@@ -70,7 +71,7 @@ class WorkflowSafeguardTests(unittest.TestCase):
                 {"name": "整体模式", "description": "整体描述", "code_ids": [0, 40, 80]},
             ]}),
         ]
-        codes = [Code(code_id=i, description=f"编码{i}", source_chunks=[i // 40]) for i in range(85)]
+        codes = [matched_code(code_id=i, description=f"编码{i}", source_chunks=[i // 40]) for i in range(85)]
         themes = agent.generate_themes(codes)
         self.assertEqual(len(agent.client.chat.completions.create.call_args_list), 4)
         self.assertEqual(themes[0].code_ids, [0, 40, 80])
@@ -85,8 +86,8 @@ class WorkflowSafeguardTests(unittest.TestCase):
             "themes": [{"name": "模式", "description": "描述", "code_ids": [0]}],
         })
         themes = agent.generate_themes([
-            Code(code_id=0, description="相同 编码", source_chunks=[0]),
-            Code(code_id=1, description="相同编码", source_chunks=[1]),
+            matched_code(code_id=0, description="相同 编码", source_chunks=[0]),
+            matched_code(code_id=1, description="相同编码", source_chunks=[1]),
         ])
         self.assertEqual(themes[0].code_ids, [0])
         prompt = agent.client.chat.completions.create.call_args.kwargs["messages"][1]["content"]
@@ -111,14 +112,14 @@ class WorkflowSafeguardTests(unittest.TestCase):
             generation.return_value.run.return_value = generation_data()
             evaluation.return_value.run.return_value = evaluation_data(4.0, True)
             output = Path(temp) / "outputs"
-            framework = TAMAFramework(api_key="test", output_dir=str(output))
-            memory = framework.run_analysis("private quote", save_final=False)
+            framework = TAMAFramework(api_key="test", output_dir=str(output), corpus_review=False)
+            memory = framework.run_analysis("private quote", save_final=False, source_metadata={"source_id": "fixture"})
             self.assertFalse(output.exists())
             self.assertEqual(memory["codes"][0]["excerpt"], "private quote")
             self.assertEqual(evaluation.return_value.run.call_args.kwargs["acceptance_threshold"], 4.0)
 
             saved = framework.run_analysis(
-                "private quote", session_name="study", save_final=True,
+                "private quote", session_name="study", source_metadata={"source_id": "fixture"}, save_final=True,
                 save_intermediate=False,
             )
             persisted = (output / "study" / "00_final_results.json").read_text(encoding="utf-8")
@@ -130,7 +131,7 @@ class WorkflowSafeguardTests(unittest.TestCase):
             self.assertTrue((output / "study" / "next_data_plan.md").is_file())
             self.assertEqual(saved["codes"][0]["excerpt"], "private quote")
             again = framework.run_analysis(
-                "private quote", session_name="study", save_final=True, save_intermediate=False,
+                "private quote", session_name="study", source_metadata={"source_id": "fixture"}, save_final=True, save_intermediate=False,
             )
             self.assertNotEqual(again["session_name"], "study")
             self.assertTrue((output / again["session_name"] / "00_final_results.json").exists())
@@ -147,8 +148,8 @@ class WorkflowSafeguardTests(unittest.TestCase):
                 "refinement_plan": {"summary": "调整"},
                 "theme_count_before": 1, "theme_count_after": 1,
             }
-            framework = TAMAFramework(api_key="test", output_dir=temp, max_iterations=6)
-            result = framework.run_analysis("文本", save_final=False, save_intermediate=False)
+            framework = TAMAFramework(api_key="test", output_dir=temp, max_iterations=6, corpus_review=False)
+            result = framework.run_analysis("private quote", save_final=False, save_intermediate=False, source_metadata={"source_id": "fixture"})
             self.assertEqual(result["stop_reason"], "no_improvement")
             self.assertEqual([item["average_score"] for item in result["score_history"]], [3.0] * 3)
             self.assertEqual(refinement.return_value.run.call_count, 2)

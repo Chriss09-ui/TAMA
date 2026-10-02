@@ -12,6 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT))
 
+from evidence_fixtures import matched_code
 from agents.evaluation_agent import EvaluationAgent, EvaluationResult
 from decisions.base import DecisionAnswer, DecisionProvider, DecisionProviderError
 from decisions.jev_client import JevDecisionClient
@@ -19,7 +20,7 @@ from prompts import CRITERION_SCALES
 
 
 THEME = {"name": "日常安排", "description": "日常出行的调整。", "codes": ["通勤安排的变化"]}
-CODES = [{"description": "通勤安排的变化"}]
+CODES = [matched_code(code_id=0, description="通勤安排的变化").model_dump()]
 
 
 def fake_response(data):
@@ -95,7 +96,8 @@ class HybridEvaluationTests(unittest.TestCase):
 
         state, questions = provider.calls[0]
         self.assertEqual(state["theme"]["codes"], ["通勤安排的变化"])
-        self.assertEqual(state["original_codes"], CODES)
+        self.assertEqual(state["original_codes"][0]["excerpt"], CODES[0]["excerpt"])
+        self.assertEqual(state["original_codes"][0]["code_id"], 0)
         self.assertEqual(set(questions), {
             "coverage", "actionability", "distinctiveness", "relevance", "needs_refinement",
         })
@@ -189,9 +191,9 @@ class HybridEvaluationTests(unittest.TestCase):
             )
 
         agent.evaluate_theme = Mock(side_effect=[evaluation("主题甲", 5.0), evaluation("主题乙", 3.5)])
-        themes = [{"name": "主题甲"}, {"name": "主题乙"}]
+        themes = [{"name": "主题甲", "code_ids": [0]}, {"name": "主题乙", "code_ids": [0]}]
         agent.max_workers = 1
-        result = agent.evaluate_all_themes(themes, [], acceptance_threshold=4.0)
+        result = agent.evaluate_all_themes(themes, CODES, acceptance_threshold=4.0)
 
         self.assertGreater(result.average_score, 4.0)
         self.assertFalse(result.is_acceptable)
@@ -304,7 +306,7 @@ class HybridEvaluationTests(unittest.TestCase):
     def test_provider_calls_run_concurrently_with_order_kept(self):
         barrier = Barrier(3)
         themes = [
-            {"name": f"主题 {i}", "description": "描述", "codes": []} for i in range(3)
+            {"name": f"主题 {i}", "description": "描述", "codes": [], "code_ids": [0]} for i in range(3)
         ]
 
         class BlockingProvider(StubDecisionProvider):

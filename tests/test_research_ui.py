@@ -83,10 +83,9 @@ class ResearchEditorTests(unittest.TestCase):
             workspace = app.session_state["analysis_result"]["research_workspace"]
             self.assertTrue(workspace["decisions"][0]["confirmed"])
             self.assertEqual(workspace["submitted_decision_ids"], [])
-            app.checkbox(key="continue_current_research").check().run()
-            decision_id = workspace["decisions"][0]["decision_id"]
-            app.multiselect(key="submitted_analysis_decisions").set_value([decision_id]).run()
-            self.assertFalse(app.checkbox(key="confirm_submit_decisions").value)
+            checkbox_keys = [control.key for control in app.checkbox]
+            self.assertNotIn("continue_current_research", checkbox_keys)
+            self.assertFalse(any(control.key == "submitted_analysis_decisions" for control in app.multiselect))
             self.assertIsNone(JOB_REGISTRY.current())
 
     def test_grounded_mode_and_explicit_source_reach_the_runner(self):
@@ -126,31 +125,17 @@ class ResearchEditorTests(unittest.TestCase):
                 save_workspace(result, workspace, root)
             self.assertFalse((Path(root) / "00_final_results.json").exists())
 
-    def test_theoretical_sampling_task_can_be_completed_with_an_analytic_outcome(self):
+    def test_single_submission_has_no_continuation_or_sampling_editors(self):
         with patch.dict(os.environ, {}, clear=True):
             app = AppTest.from_file(str(ROOT / "streamlit_app.py"))
             app.session_state["analysis_result"] = study_result()
             app.run()
-            app.selectbox(key="task_新任务_kind").set_value("理论抽样")
-            app.selectbox(key="task_新任务_category").set_value("C0")
-            for field, value in {"gap": "权限和表达尚不能区分", "target": "对照两类事件", "rationale": "不同条件有助区分解释",
-                                  "expected_change": "确定边界条件", "researcher": "R1"}.items():
-                control = app.text_input if field == "researcher" else app.text_area
-                control(key=f"task_新任务_{field}").set_value(value)
-            app.button(key="FormSubmitter:sampling_form_新任务-保存资料任务").click().run()
             self.assertFalse(app.exception)
-            task = app.session_state["analysis_result"]["research_workspace"]["sampling_tasks"][0]
-            self.assertEqual(task["kind"], "理论抽样")
-            task_id = task["task_id"]
-            app.selectbox(key="sampling_task_selection").set_value(task_id).run()
-            app.selectbox(key=f"task_{task_id}_status").set_value("已分析")
-            app.text_area(key=f"task_{task_id}_outcome").set_value("样例比较提示需要拆分条件")
-            app.button(key=f"FormSubmitter:sampling_form_{task_id}-保存资料任务").click().run()
-            self.assertFalse(app.exception)
-            tasks = app.session_state["analysis_result"]["research_workspace"]["sampling_tasks"]
-            self.assertEqual(len(tasks), 1)
-            self.assertEqual(tasks[0]["status"], "已分析")
-            self.assertIn("拆分条件", tasks[0]["outcome"])
+            keys = [control.key or "" for control in app.selectbox]
+            self.assertFalse(any(key.startswith("task_") for key in keys))
+            self.assertNotIn("sampling_task_selection", keys)
+            self.assertNotIn("continue_current_research", [control.key for control in app.checkbox])
+            self.assertNotIn("previous_research_json", [control.key for control in app.get("file_uploader")])
 
     def test_relationship_graph_renders_only_after_a_supported_relation_is_saved(self):
         with patch.dict(os.environ, {}, clear=True):
@@ -166,6 +151,54 @@ class ResearchEditorTests(unittest.TestCase):
             self.assertEqual(relations[0]["code_ids"], [0, 1])
             self.assertEqual(relations[0]["researcher"], "R1")
             self.assertIsNone(JOB_REGISTRY.current())
+
+    def test_full_text_review_defaults_on_and_can_be_disabled(self):
+        with patch.dict(os.environ, {}, clear=True), patch("tama.TAMAFramework") as framework:
+            framework.return_value.run_analysis.return_value = study_result()
+            app = AppTest.from_file(str(ROOT / "streamlit_app.py")).run()
+            self.assertTrue(app.checkbox(key="corpus_review").value)
+            app.checkbox(key="corpus_review").uncheck().run()
+            app.text_area(key="transcript_text").set_value("受访者：已有的文稿。").run()
+            app.text_input(key="api_key_DeepSeek").set_value("test").run()
+            app.button(key="run_analysis").click().run()
+            self.assertTrue(app.session_state["analysis_job"].done.wait(2))
+            app.run()
+            self.assertFalse(app.exception)
+            self.assertFalse(framework.call_args.kwargs["corpus_review"])
+            self.assertNotIn("previous_result", framework.return_value.run_analysis.call_args.kwargs)
+
+    def test_unscored_partial_review_renders_pending_codes_and_downloads(self):
+        result = study_result()
+        result["metadata"]["final_average_score"] = None
+        result["accepted"] = False
+        result["stop_reason"] = "corpus_review_incomplete"
+        result["corpus_review"] = {"status": "partial", "total_chunks": 2, "reviewed_chunks": 1,
+                                  "findings": [], "failed_chunks": [{"chunk_id": 1, "error_type": "ValueError"}]}
+        with patch.dict(os.environ, {}, clear=True):
+            app = AppTest.from_file(str(ROOT / "streamlit_app.py"))
+            app.session_state["analysis_result"] = result
+            app.run()
+            self.assertFalse(app.exception)
+            self.assertTrue(any(metric.value == "未评分" for metric in app.metric))
+            self.assertTrue(any("部分完成" in warning.value for warning in app.warning))
+            self.assertTrue(any("待核查编码" in expander.label for expander in app.expander))
+            self.assertEqual(len(app.get("download_button")), 2)
+
+    def test_independent_result_clears_previous_interpretation_widget(self):
+        first = study_result()
+        first["final_themes"] = [{"name": "第一份文稿主题", "description": "描述", "code_ids": [0]}]
+        second = study_result("R2")
+        second["final_themes"] = [{"name": "第二份文稿主题", "description": "描述", "code_ids": [0]}]
+        with patch.dict(os.environ, {}, clear=True):
+            app = AppTest.from_file(str(ROOT / "streamlit_app.py"))
+            app.session_state["analysis_result"] = first
+            app.run()
+            app.text_area(key="theme_interpretation_0").set_value("第一份的人工说明").run()
+            app.session_state["analysis_result"] = second
+            app.run()
+            self.assertFalse(app.exception)
+            self.assertEqual(app.text_area(key="theme_interpretation_0").value, "")
+
 
 
 if __name__ == "__main__":

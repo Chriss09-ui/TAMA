@@ -39,6 +39,8 @@ from reflexivity import (
     save_reflexivity,
 )
 from reporting import report_lines
+from next_data_plan import GROUP_ORDER, material_review_text
+from evidence import EVIDENCE_LABELS, REVIEW_KIND_LABELS, is_matched
 from research_ui import research_inputs, render_research_tools
 
 def reflexivity_path() -> Path:
@@ -314,23 +316,77 @@ def save_reflexivity_notes() -> None:
     st.session_state["reflexivity_notice"] = "自反记录已写在本机 reflexivity.md，没有发送给模型。"
 
 
+def reset_result_widgets() -> None:
+    prefixes = ("theme_interpretation_", "comparison_", "decision_", "category_", "task_",
+                "argument_", "review_", "relation_", "definition_review_")
+    for key in list(st.session_state):
+        if key.startswith(prefixes) and key != "decision_mode":
+            st.session_state.pop(key, None)
+    st.session_state.pop("_research_editor_round", None)
+
+
+def render_corpus_review(result, code_by_id) -> None:
+    review = result.get("corpus_review") or {}
+    if review:
+        labels = {"complete": "全文回查完成", "partial": "全文回查部分完成", "failed": "全文回查失败", "disabled": "全文回查已关闭"}
+        text = labels.get(review.get("status"), "全文回查状态未知")
+        if review.get("status") in ("partial", "failed"):
+            st.warning(text + "，本次结果需要人工复核。")
+        else:
+            st.caption(text)
+        if review.get("total_chunks") is not None:
+            st.caption(f"已检查 {review.get('reviewed_chunks', 0)} / {review['total_chunks']} 个片段")
+        if review.get("findings"):
+            with st.expander("全文回查发现与原文位置"):
+                for finding in review["findings"]:
+                    code = code_by_id.get(finding["code_id"], {})
+                    st.write(f"[{finding['code_id']}] {REVIEW_KIND_LABELS.get(finding['kind'], finding['kind'])}：{material_review_text(finding['reason'])}")
+                    st.caption(EVIDENCE_LABELS.get(code.get("evidence_status"), "尚未核验"))
+                    if is_matched(code):
+                        st.write(f"原话：{code['excerpt']}")
+                        st.caption(f"原文字符位置：{code['source_start']}–{code['source_end']}")
+                        st.text(code.get("context") or "")
+    if result.get("source_documents"):
+        with st.expander("查看本次原文"):
+            for document in result["source_documents"]:
+                st.caption(f"来源：{document['source_id']}")
+                st.text(document["text"])
+    pending = [code for code in code_by_id.values() if not is_matched(code)]
+    if pending:
+        with st.expander(f"待核查编码 · {len(pending)} 条（不作为主题证据）"):
+            for code in pending:
+                st.write(f"[{code['code_id']}] {code.get('name') or code.get('description')}")
+                st.caption(EVIDENCE_LABELS.get(code.get("evidence_status"), "尚未核验"))
+                st.write(material_review_text(code.get("open_question")))
+
+
 def render_result(result: dict) -> None:
     """Display the latest analysis without exposing the API key."""
+    scope = (result.get("session_name"), result.get("timestamp"))
+    if st.session_state.get("_result_widget_scope") != scope:
+        reset_result_widgets()
+        st.session_state["_result_widget_scope"] = scope
     st.header("3. 分析结果")
-    st.caption("最近一次成功运行")
+    st.caption("本次独立分析")
 
     status = {
         "accepted": "本轮主题评估通过", "no_improvement": "本轮连续评估未提升，已停止自动修订",
         "max_iterations": "本轮已达到最大评估轮次",
+        "no_valid_evidence": "没有可参与分析的有效原文证据",
+        "no_valid_themes": "没有可评估的有效主题",
+        "corpus_review_incomplete": "全文回查未完整完成",
     }.get(result.get("stop_reason"), "本轮主题评估通过" if result["accepted"] else "本轮自动处理结束")
     score = result["metadata"]["final_average_score"]
     themes = result["final_themes"]
     code_by_id = {code.get("code_id"): code for code in result.get("codes", [])}
 
-    st.success(f"本轮处理完成 · {status}")
+    if (result.get("corpus_review") or {}).get("status") in ("partial", "failed"):
+        st.warning(f"本次处理结束 · {status}")
+    else:
+        st.success(f"本次处理完成 · {status}")
     st.caption("自动处理结束与主题评分通过均不代表理论饱和。")
     score_col, theme_col = st.columns(2)
-    score_col.metric("平均分", f"{score:.2f} / 5")
+    score_col.metric("平均分", f"{score:.2f} / 5" if isinstance(score, (int, float)) else "未评分")
     theme_col.metric("主题数", len(themes))
     st.caption(f"评估轮次：{result['refinement_iterations']}")
     storyline = result.get("analytic_storyline") if "analytic_storyline" in result else result.get("generation", {}).get("analytic_storyline")
@@ -345,13 +401,14 @@ def render_result(result: dict) -> None:
 
     final_evaluation = result.get("final_evaluation") or {}
     if final_evaluation.get("global_feedback"):
-        st.info(final_evaluation["global_feedback"])
+        st.info("主题评分反馈：" + final_evaluation["global_feedback"])
     flagged_themes = final_evaluation.get("flagged_themes", [])
     if flagged_themes:
         st.warning(
             f"建议人工复核 {len(flagged_themes)} 个主题：{'、'.join(flagged_themes)}"
         )
 
+    render_corpus_review(result, code_by_id)
     render_research_tools(result, ROOT)
     st.subheader("保存结果")
     interpretations = [
@@ -386,8 +443,8 @@ def render_result(result: dict) -> None:
 
     plan_groups = (result.get("next_data_plan") or {}).get("groups") or {}
     if any(plan_groups.values()):
-        st.subheader("下一轮可以收集什么")
-        for group_name in ("需补访角色", "需查材料", "需核对信息"):
+        st.subheader("当前材料复核")
+        for group_name in GROUP_ORDER:
             entries = plan_groups.get(group_name) or []
             if not entries:
                 continue
@@ -442,7 +499,7 @@ def render_result(result: dict) -> None:
                             f"{VERIFICATION_LABELS.get(code.get('verification_status'), '尚未核实')}"
                         )
                         if code.get("open_question"):
-                            st.write(f"待核查：{code['open_question']}")
+                            st.write(f"待核查：{material_review_text(code['open_question'])}")
             elif theme.get("codes"):
                 with st.expander(f"查看关联编码 · {len(theme['codes'])} 条"):
                     for code in theme["codes"]:
@@ -458,7 +515,7 @@ def render_result(result: dict) -> None:
                     if code.get("excerpt"):
                         st.write(f"原话：{code['excerpt']}")
             for question in theme.get("open_questions", []):
-                st.write(f"待核查：{question}")
+                st.write(f"待核查：{material_review_text(question)}")
             st.text_area(
                 "诠释（由你写，不发送给模型）",
                 key=f"theme_interpretation_{index - 1}",
@@ -468,7 +525,7 @@ def render_result(result: dict) -> None:
 
     canonical_codes = [
         code for code in result.get("codes") or []
-        if code.get("merged_into") is None
+        if code.get("merged_into") is None and is_matched(code)
     ]
     if canonical_codes:
         with st.expander(f"编码簿 · {len(canonical_codes)} 条主编码"):
@@ -491,7 +548,7 @@ def render_result(result: dict) -> None:
                 if code.get("excerpt"):
                     st.write(f"正例：{code['excerpt']}")
                 if code.get("open_question"):
-                    st.write(f"待核查：{code['open_question']}")
+                    st.write(f"待核查：{material_review_text(code['open_question'])}")
 
 
 def render_reflexivity() -> None:
@@ -743,7 +800,11 @@ def main() -> None:
         max_workers = st.number_input(
             "并发请求数", min_value=1, max_value=8, value=4, step=1,
             key="max_workers", disabled=running,
-            help="仅用于相互独立的片段编码和主题评估请求；遇到接口限流时可调低。",
+            help="用于相互独立的片段编码、全文回查和主题评估请求；遇到接口限流时可调低。",
+        )
+        corpus_review = st.checkbox(
+            "全文检查（查找遗漏和反例）", value=True, key="corpus_review", disabled=running,
+            help="首次生成候选主题后，逐片检查本次全文；新增有效证据会更新候选主题。会增加模型调用与耗时。",
         )
         max_iterations = st.number_input(
             "最多评估轮次", min_value=1, max_value=10, value=5,
@@ -757,7 +818,7 @@ def main() -> None:
         )
         save_final = st.checkbox(
             "保存本地结果", value=False, key="save_final", disabled=running,
-            help="关闭时只在当前服务进程中保留结果；可手动下载 Word 或 JSON。",
+            help="完整 JSON 包含本次原文。关闭时不保存本地结果，可按需下载；Word 不附整篇原文。",
         )
         with st.expander("高级设置"):
             confidence_threshold = st.number_input(
@@ -856,6 +917,7 @@ def main() -> None:
                     chunk_strategy=chunk_strategy,
                     max_workers=int(max_workers),
                     max_iterations=int(max_iterations),
+                    corpus_review=corpus_review,
                     decision_provider=decision_provider,
                     confidence_threshold=float(confidence_threshold),
                     output_dir=str(ROOT / "outputs"),
@@ -873,6 +935,8 @@ def main() -> None:
                     **run_options,
                 )
 
+            reset_result_widgets()
+            st.session_state.pop("_result_widget_scope", None)
             st.session_state.pop("analysis_result", None)
             try:
                 job = JOB_REGISTRY.start(run)

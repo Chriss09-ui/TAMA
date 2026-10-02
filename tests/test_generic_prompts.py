@@ -10,6 +10,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from agents.evaluation_agent import EvaluationAgent
 from agents.generation_agent import Chunk, Code, GenerationAgent
+from evidence_fixtures import matched_code
 from agents.refinement_agent import RefinementAgent
 from decisions.base import DecisionAnswer
 
@@ -49,7 +50,7 @@ class GenericPromptTests(unittest.TestCase):
         agent.client.chat.completions.create.return_value = fake_response(
             {"themes": [{"name": "日常安排", "description": "日常出行的调整。", "codes": ["通勤安排的变化"]}]}
         )
-        agent.generate_themes([Code(code_id=0, description="通勤安排的变化", source_chunks=[0])])
+        agent.generate_themes([matched_code(code_id=0, description="通勤安排的变化", source_chunks=[0])])
         self.assertEqual(stages[-1], "归纳主题")
         self.assert_generic_prompt(agent.client)
         theme_prompt = agent.client.chat.completions.create.call_args.kwargs["messages"][1]["content"]
@@ -83,7 +84,7 @@ class GenericPromptTests(unittest.TestCase):
                 "needs_refinement": False, "refinement_suggestions": []
             })
             theme = {"name": "日常安排", "description": "日常出行的调整。", "codes": ["通勤安排的变化"]}
-            agent.evaluate_theme(theme, [theme], [{"description": "通勤安排的变化"}])
+            agent.evaluate_theme(theme, [theme], [matched_code(code_id=0, description="通勤安排的变化").model_dump()])
         self.assertEqual(stages, ["评估主题 · 日常安排", "生成评估反馈 · 日常安排"])
         self.assert_generic_prompt(agent.client)
         self.assertIn("追溯到原文", agent.criteria.relevance)
@@ -178,7 +179,7 @@ class GenericPromptTests(unittest.TestCase):
             },
         ]})
         themes = agent.generate_themes([
-            Code(code_id=3, description="法务掌握合同", source_chunks=[0]),
+            matched_code(code_id=3, description="法务掌握合同", source_chunks=[0]),
         ])
 
         self.assertEqual(themes[0].code_ids, [3])

@@ -9,6 +9,7 @@ from unittest.mock import Mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from agents.generation_agent import Chunk, Code, GenerationAgent
+from evidence_fixtures import matched_code
 from code_mapping import apply_related_codes, build_code_map, render_code_landscape
 from code_memos import code_memos_for_model, render_code_memos_markdown
 from codebook import exact_merge, render_codebook, semantic_merge
@@ -100,9 +101,9 @@ class ScaleAndMemoTests(unittest.TestCase):
 class CodebookTests(unittest.TestCase):
     def test_synonymous_codes_merge_and_keep_source_ids(self):
         codes = [
-            Code(code_id=0, description="每天把抱怨抄进表格", source_chunks=[0], excerpt="抄进表格"),
-            Code(code_id=1, description="把群消息誊到 Excel", source_chunks=[1], excerpt="誊到 Excel"),
-            Code(code_id=2, description="第一次进公司", source_chunks=[0], excerpt="第一次进公司"),
+            matched_code(code_id=0, description="每天把抱怨抄进表格", source_chunks=[0], excerpt="抄进表格"),
+            matched_code(code_id=1, description="把群消息誊到 Excel", source_chunks=[1], excerpt="誊到 Excel"),
+            matched_code(code_id=2, description="第一次进公司", source_chunks=[0], excerpt="第一次进公司"),
         ]
         semantic_merge(codes, [{
             "name": "整理客户留言",
@@ -128,9 +129,9 @@ class CodebookTests(unittest.TestCase):
             choices=[SimpleNamespace(message=SimpleNamespace(content="not json"))]
         )
         codes = [
-            Code(code_id=0, description="相同 编码", source_chunks=[0]),
-            Code(code_id=1, description="相同编码", source_chunks=[1]),
-            Code(code_id=2, description="另一件事", source_chunks=[1]),
+            matched_code(code_id=0, description="相同 编码", source_chunks=[0]),
+            matched_code(code_id=1, description="相同编码", source_chunks=[1]),
+            matched_code(code_id=2, description="另一件事", source_chunks=[1]),
         ]
         agent.consolidate_codebook(codes)
         self.assertIsNone(codes[1].merged_into)
@@ -141,8 +142,8 @@ class CodebookTests(unittest.TestCase):
 
     def test_theme_expands_merged_code_ids_and_keeps_rationale(self):
         codes = [
-            Code(code_id=0, description="抄进表格", source_chunks=[0]),
-            Code(code_id=1, description="誊到 Excel", source_chunks=[1]),
+            matched_code(code_id=0, description="抄进表格", source_chunks=[0]),
+            matched_code(code_id=1, description="誊到 Excel", source_chunks=[1]),
         ]
         exact_merge(codes)
         semantic_merge(codes, [{
@@ -202,9 +203,9 @@ class CodingCycleTests(unittest.TestCase):
 
     def test_code_map_drops_unknown_ids_and_keeps_every_code(self):
         codes = [
-            Code(code_id=0, description="少", name="少", source_chunks=[0], excerpt="一句"),
-            Code(code_id=1, description="多", name="多", source_chunks=[1], excerpt="二句"),
-            Code(code_id=2, description="并入", name="并入", source_chunks=[1], excerpt="三句", merged_into=1),
+            matched_code(code_id=0, description="少", name="少", source_chunks=[0], excerpt="一句"),
+            matched_code(code_id=1, description="多", name="多", source_chunks=[1], excerpt="二句"),
+            matched_code(code_id=2, description="并入", name="并入", source_chunks=[1], excerpt="三句", merged_into=1),
         ]
         codes[1].merged_from = [2]
         code_map = build_code_map(codes, {
@@ -251,7 +252,7 @@ class CodingCycleTests(unittest.TestCase):
             "metadata": {"final_average_score": 3},
             "generation": {"analytic_storyline": "记录交上去之后不再被使用"},
             "codes": [
-                {"code_id": 0, "description": "少", "name": "少", "excerpt": "一句", "method": "过程编码"},
+                matched_code(code_id=0, description="少", name="少", excerpt="一句", method="过程编码").model_dump(),
             ],
             "final_themes": [{
                 "name": "记录无人再看",
@@ -260,6 +261,7 @@ class CodingCycleTests(unittest.TestCase):
                 "counterexample_code_ids": [],
             }],
         }
+        result["codes"] = [matched_code(**code).model_dump() for code in result["codes"]]
         lines = "\n".join(text for _kind, text in report_lines(result))
         self.assertIn("过程编码", lines)
         self.assertIn("本轮主题故事线（草稿，模型所写）", lines)
@@ -280,10 +282,10 @@ class ReportAndPlanTests(unittest.TestCase):
             }],
             memos=[{"theme": "对外公开", "uncertain": "导师和官网哪一边为准"}],
         )
-        self.assertIn("去问产品经理后来有没有人用", plan["groups"]["需补访角色"])
-        self.assertIn("核对官网帮助中心的原文", plan["groups"]["需查材料"])
-        self.assertIn("导师和官网哪一边为准", plan["groups"]["需查材料"])
-        self.assertTrue(any("反例编码 4" in item for item in plan["groups"]["需核对信息"]))
+        self.assertIn("当前材料尚无法回答此问题，请核对相关原文与解释边界。", plan["groups"]["原文与来源核对"])
+        self.assertIn("核对官网帮助中心的原文", plan["groups"]["原文与来源核对"])
+        self.assertIn("导师和官网哪一边为准", plan["groups"]["解释边界"])
+        self.assertTrue(any("反例编码 4" in item for item in plan["groups"]["矛盾与反例检查"]))
 
     def test_report_keeps_one_copy_of_a_quote_and_leaves_blanks(self):
         shared = "表格交上去之后几乎没有人再打开"
@@ -316,6 +318,7 @@ class ReportAndPlanTests(unittest.TestCase):
             ],
             "memos": [],
         }
+        result["codes"] = [matched_code(**code).model_dump() for code in result["codes"]]
         lines = "\n".join(text for _kind, text in report_lines(result))
         self.assertEqual(lines.count(shared), 1)
         self.assertIn("产品经理直接把记录改成了周报标题", lines)
@@ -342,6 +345,7 @@ class ReportAndPlanTests(unittest.TestCase):
                 for index, excerpt in enumerate(excerpts)
             ],
         }
+        result["codes"] = [matched_code(**code).model_dump() for code in result["codes"]]
         packs = assign_theme_quotes(result)
         self.assertLess(len(packs[0]["supports"]), 6)
         self.assertLessEqual(len(packs[0]["supports"]), 4)
