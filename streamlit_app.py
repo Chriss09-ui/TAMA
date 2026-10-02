@@ -1,4 +1,4 @@
-"""Local web interface for TAMA thematic analysis."""
+"""Local web interface for Threadline qualitative analysis."""
 
 import json
 import os
@@ -539,7 +539,7 @@ def render_methodology_references() -> None:
 
 
 def main() -> None:
-    st.set_page_config(page_title="TAMA · 访谈质性分析", page_icon="📝", layout="wide")
+    st.set_page_config(page_title="Threadline · 访谈质性分析", page_icon="📝", layout="wide")
     st.markdown(
         """
         <style>
@@ -766,7 +766,7 @@ def main() -> None:
                 help="评估判断的置信度低于该值时，会请求详细反馈并在结果中标记为建议人工复核。",
             )
 
-    st.caption("TAMA · 质性研究工作台")
+    st.caption("Threadline · 质性研究工作台")
     st.title("访谈质性分析")
     st.write("提取有原文依据的编码，识别共享意义模式、反例和待核查问题；可按研究问题聚焦。")
 

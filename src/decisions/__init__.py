@@ -1,4 +1,4 @@
-"""Decision provider layer: typed probabilistic decisions for TAMA agents."""
+"""Decision provider layer: typed probabilistic decisions for Threadline agents."""
 
 from decisions.base import (
     DecisionAnswer,

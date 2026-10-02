@@ -1,4 +1,4 @@
-# TAMA Framework Requirements
+# Threadline Framework Requirements
 # Python 3.10+
 
 # Core dependencies

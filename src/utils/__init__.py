@@ -1,5 +1,5 @@
 """
-TAMA Utilities Package
+Threadline Utilities Package
 """
 
 __all__ = []

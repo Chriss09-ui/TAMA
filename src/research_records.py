@@ -220,7 +220,7 @@ def prepare_previous_result(result: dict) -> tuple[list[dict], ResearchWorkspace
     from agents.generation_agent import Code
 
     if not isinstance(result, dict) or not isinstance(result.get("codes"), list) or not result["codes"]:
-        raise ValueError("请选择包含编码的 TAMA 完整结果 JSON")
+        raise ValueError("请选择包含编码的 Threadline 完整结果 JSON")
     codes = [Code.model_validate({"source_chunks": [], **value}).model_dump() for value in result["codes"]]
     ids = [item["code_id"] for item in codes]
     if len(ids) != len(set(ids)) or any(code_id < 0 for code_id in ids):

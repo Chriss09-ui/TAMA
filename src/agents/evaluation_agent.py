@@ -1,5 +1,5 @@
 """
-Evaluation Agent for TAMA Framework
+Evaluation Agent for Threadline Framework
 Evaluates generated themes based on four criteria: Coverage, Actionability, Distinctiveness, and Relevance.
 Provides feedback for refinement until affirmative answer is received.
 """

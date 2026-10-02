@@ -1,4 +1,4 @@
-# TAMA Framework - Installation and Setup Guide
+# Threadline Framework - Installation and Setup Guide
 
 ## Prerequisites
 
@@ -62,7 +62,7 @@ python example_usage.py
 
 This will:
 1. Create a sample transcript (if not exists)
-2. Run the complete TAMA analysis
+2. Run the complete Threadline analysis
 3. Save results to `outputs/example_analysis/`
 
 ### Use Your Own Transcript
@@ -72,13 +72,17 @@ This will:
 
 ```python
 import os
-from src.tama import TAMAFramework, load_transcript
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path("src").resolve()))
+from tama import ThreadlineFramework, load_transcript
 
 # Set API key
 api_key = os.getenv("OPENAI_API_KEY")
 
 # Initialize framework
-tama = TAMAFramework(
+framework = ThreadlineFramework(
     api_key=api_key,
     model="gpt-4o",
     max_iterations=5,
@@ -88,7 +92,7 @@ tama = TAMAFramework(
 
 # Load and analyze transcript
 transcript = load_transcript("data/your_transcript.txt")
-result = tama.run_analysis(
+result = framework.run_analysis(
     transcript=transcript,
     session_name="my_analysis",
     save_intermediate=True
@@ -98,7 +102,7 @@ result = tama.run_analysis(
 ## Project Structure
 
 ```
-TAMA/
+threadline/
 ├── src/
 │   ├── agents/
 │   │   ├── __init__.py
@@ -128,10 +132,10 @@ TAMA/
 
 ## Configuration Options
 
-You can customize the TAMA framework behavior:
+You can customize the Threadline framework behavior:
 
 ```python
-tama = TAMAFramework(
+framework = ThreadlineFramework(
     api_key="your-api-key",
     model="gpt-4o",              # Model: "gpt-4o", "gpt-4o-mini", "gpt-4-turbo"
     max_iterations=5,            # Max refinement cycles (1-10)
@@ -158,7 +162,7 @@ expert_criteria = {
     "relevance": "must accurately reflect the parents' experiences and concerns about AAOCA"
 }
 
-tama = TAMAFramework(
+framework = ThreadlineFramework(
     api_key=api_key,
     expert_criteria=expert_criteria
 )
@@ -226,7 +230,7 @@ manual_agent = GenerationAgent(
 ### Programmatic Access to Results
 
 ```python
-result = tama.run_analysis(transcript=transcript)
+result = framework.run_analysis(transcript=transcript)
 
 # Access final themes
 for theme in result['final_themes']:

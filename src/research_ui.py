@@ -48,7 +48,7 @@ def research_inputs(current_result, running):
             try:
                 codes, workspace = prepare_previous_result(previous)
             except (ValueError, TypeError, KeyError):
-                error = "前轮结果格式或证据编号无效，请使用完整的 TAMA 结果。"
+                error = "前轮结果格式或证据编号无效，请使用完整的 Threadline 结果。"
             else:
                 options["previous_result"] = previous
                 scope = f"{workspace.project_id}:{workspace.round_id}"

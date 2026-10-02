@@ -1,4 +1,4 @@
-# TAMA 与《质性研究入门指南》对照说明
+# Threadline 与《质性研究入门指南》对照说明
 
 > 本文档说明本项目的设计依据：Corrine Glesne《质性研究入门指南（第 5 版）》
 > （*Becoming Qualitative Researchers: An Introduction*, 5th ed.；崔淼、苏敬勤译，北京大学出版社）。

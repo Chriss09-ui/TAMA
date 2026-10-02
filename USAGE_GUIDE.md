@@ -1,4 +1,4 @@
-# TAMA Framework - Detailed Usage Guide
+# Threadline Framework - Detailed Usage Guide
 
 ## Table of Contents
 1. [Introduction](#introduction)
@@ -11,7 +11,7 @@
 
 ## Introduction
 
-TAMA (Thematic Analysis using Multi-Agent LLMs) automates qualitative thematic analysis of clinical interview transcripts using three specialized AI agents:
+Threadline automates qualitative thematic analysis of clinical interview transcripts using three specialized AI agents:
 
 - **Generation Agent**: Creates initial themes from transcript
 - **Evaluation Agent**: Assesses theme quality using four criteria
@@ -43,10 +43,14 @@ Place your transcript in the `data/` directory.
 
 ```python
 import os
-from src.tama import TAMAFramework, load_transcript
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path("src").resolve()))
+from tama import ThreadlineFramework, load_transcript
 
 # Initialize
-tama = TAMAFramework(
+framework = ThreadlineFramework(
     api_key=os.getenv("OPENAI_API_KEY"),
     model="gpt-4o"
 )
@@ -55,7 +59,7 @@ tama = TAMAFramework(
 transcript = load_transcript("data/your_transcript.txt")
 
 # Run analysis
-result = tama.run_analysis(
+result = framework.run_analysis(
     transcript=transcript,
     session_name="my_analysis"
 )
@@ -72,7 +76,7 @@ Check `outputs/my_analysis/` for:
 ### Configuration Parameters
 
 ```python
-tama = TAMAFramework(
+framework = ThreadlineFramework(
     api_key="your-api-key",
 
     # Model selection
@@ -132,7 +136,7 @@ education_criteria = {
     "relevance": "must align with teachers' and students' reported experiences"
 }
 
-tama = TAMAFramework(
+framework = ThreadlineFramework(
     api_key=api_key,
     expert_criteria=mental_health_criteria  # or education_criteria
 )
@@ -241,7 +245,7 @@ The framework repeats Evaluation → Refinement until:
 
 ```
 ================================================================================
-TAMA THEMATIC ANALYSIS - SUMMARY
+Threadline THEMATIC ANALYSIS - SUMMARY
 ================================================================================
 
 Session: my_analysis
@@ -303,7 +307,7 @@ Iteration 3:
 
 **For exploratory analysis**:
 ```python
-tama = TAMAFramework(
+framework = ThreadlineFramework(
     model="gpt-4o-mini",
     acceptance_threshold=3.5,
     max_iterations=3
@@ -312,7 +316,7 @@ tama = TAMAFramework(
 
 **For publication-quality analysis**:
 ```python
-tama = TAMAFramework(
+framework = ThreadlineFramework(
     model="gpt-4o",
     acceptance_threshold=4.5,
     max_iterations=7,
@@ -429,7 +433,7 @@ clinical_criteria = {
     "relevance": "must accurately reflect parents' reported experiences and emotions"
 }
 
-tama = TAMAFramework(
+framework = ThreadlineFramework(
     api_key=api_key,
     model="gpt-4o",
     acceptance_threshold=4.0,
@@ -447,7 +451,7 @@ user_research_criteria = {
     "relevance": "must reflect actual user statements and experiences"
 }
 
-tama = TAMAFramework(
+framework = ThreadlineFramework(
     api_key=api_key,
     model="gpt-4o-mini",  # Faster for iterative research
     acceptance_threshold=3.5,
@@ -465,7 +469,7 @@ education_criteria = {
     "relevance": "must align with educators' reported experiences"
 }
 
-tama = TAMAFramework(
+framework = ThreadlineFramework(
     api_key=api_key,
     model="gpt-4o",
     acceptance_threshold=4.5,  # Higher standard for publication

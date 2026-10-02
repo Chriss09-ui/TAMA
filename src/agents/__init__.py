@@ -1,5 +1,5 @@
 """
-TAMA Agents Package
+Threadline Agents Package
 Contains Generation, Evaluation, and Refinement agents.
 """
 

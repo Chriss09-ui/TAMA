@@ -1,5 +1,5 @@
 """
-Generation Agent for TAMA Framework
+Generation Agent for Threadline Framework
 Handles chunking, coding, and initial theme generation from interview transcripts.
 """
 

@@ -1,8 +1,8 @@
-# TAMA · 人机协作的访谈质性分析
+# Threadline · 人机协作的访谈质性分析
 
 把访谈材料整理为可回溯的编码、候选主题和研究记录，让研究者能够检查每一步分析的依据。
 
-TAMA 使用生成、评估与修订三个模型角色，完成从原文编码到主题迭代的工作。项目提供中文本地网页界面，也支持通过 Python 调用；适用于访谈、观察笔记和其他文字材料。研究问题、材料比较、分析决定与最终诠释由研究者掌握。
+Threadline 使用生成、评估与修订三个模型角色，完成从原文编码到主题迭代的工作。项目提供中文本地网页界面，也支持通过 Python 调用；适用于访谈、观察笔记和其他文字材料。研究问题、材料比较、分析决定与最终诠释由研究者掌握。
 
 **Python 3.10+ · Streamlit 本地界面 · [MIT 许可证](LICENSE)**
 
@@ -30,8 +30,8 @@ TAMA 使用生成、评估与修订三个模型角色，完成从原文编码到
 以下命令适用于 macOS / Linux：
 
 ```bash
-git clone https://github.com/Chriss09-ui/TAMA.git
-cd TAMA
+git clone https://github.com/Chriss09-ui/threadline.git
+cd threadline
 python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install -r requirements.txt
@@ -160,9 +160,9 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path("src").resolve()))
-from tama import TAMAFramework, load_transcript
+from tama import ThreadlineFramework, load_transcript
 
-framework = TAMAFramework(
+framework = ThreadlineFramework(
     api_key=os.environ["DEEPSEEK_API_KEY"],
     model="deepseek-flash",
     base_url="https://api.deepseek.com",
@@ -200,7 +200,7 @@ print("结果目录：", result["output_dir"])
 
 这些状态表示本轮程序为何停止。模型分数用于辅助检查，不能证明研究结论有效，也不能判定理论饱和。编码出现次数同样不能直接代表其研究意义；候选解释、反例与证据缺口需要回到原材料核对。
 
-本仓库实现了 TAMA 风格的多角色分析流程，未实现 TAMA 论文中的全部定量验证指标。当前方法设计及软件支持分别记录在：
+Threadline 的多角色分析流程借鉴 TAMA，未实现原论文中的全部定量验证指标。当前方法设计及软件支持分别记录在：
 
 - [《质性研究入门指南》对照说明](METHODOLOGY.md)：总体研究立场、证据、备忘录与报告设计。
 - [《质性研究编码手册》对照说明](编码手册对照/项目如何符合编码手册.md)：编码周期与编码操作。

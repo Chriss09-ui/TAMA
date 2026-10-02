@@ -1,7 +1,7 @@
-# TAMA Project Structure
+# Threadline Project Structure
 
 ```
-TAMA/
+threadline/
 │
 ├── README.md                        # Main documentation
 ├── QUICKSTART.md                    # 5-minute quick start guide
@@ -25,7 +25,7 @@ TAMA/
 │
 ├── src/                             # Source code
 │   ├── __init__.py                 # Package initialization
-│   ├── tama.py                     # Main TAMA orchestrator
+│   ├── tama.py                     # Main Threadline orchestrator
 │   ├── chunking.py                 # Dynamic sizing and natural-boundary splitting
 │   │
 │   ├── agents/                     # Multi-agent components
@@ -99,7 +99,7 @@ TAMA/
 ## Workflow Through Files
 
 1. **User starts**: Runs `example_usage.py` or custom script
-2. **Initialization**: `src/tama.py` creates TAMAFramework instance
+2. **Initialization**: `src/tama.py` creates ThreadlineFramework instance
 3. **Generation**: `generation_agent.py` processes transcript
    - `chunking.py` resolves the selected strategy and preserves natural boundaries
    - Output: `outputs/[session]/01_generation.json`
@@ -144,7 +144,7 @@ import json
 with open('config/my_config.json') as f:
     config = json.load(f)
 
-tama = TAMAFramework(
+framework = ThreadlineFramework(
     api_key=api_key,
     model=config['model'],
     max_iterations=config['max_iterations'],
@@ -212,7 +212,7 @@ black src/
 python example_usage.py
 ```
 
-## Extending TAMA
+## Extending Threadline
 
 ### Add New Evaluation Criterion
 

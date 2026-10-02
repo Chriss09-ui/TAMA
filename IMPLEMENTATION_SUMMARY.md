@@ -1,8 +1,8 @@
-# TAMA Framework - Implementation Summary
+# Threadline Framework - Implementation Summary
 
 ## Overview
 
-This document provides a technical summary of the TAMA (Thematic Analysis using Multi-Agent LLMs) framework implementation.
+This document provides a technical summary of the Threadline framework implementation.
 
 **Implementation Date**: January 16, 2025
 **Version**: 1.0.0
@@ -41,7 +41,7 @@ This document provides a technical summary of the TAMA (Thematic Analysis using 
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                     TAMA Framework                          │
+│                     Threadline Framework                    │
 │                    (tama.py - Orchestrator)                 │
 └─────────────────────────────────────────────────────────────┘
                               │
@@ -163,11 +163,11 @@ run(themes, eval_results, codes) -> Dict[str, Any]
 
 ---
 
-### 4. TAMA Orchestrator (`tama.py`)
+### 4. Threadline Orchestrator (`tama.py`)
 
 **Purpose**: Coordinate agents and manage workflow
 
-**Key Class**: `TAMAFramework`
+**Key Class**: `ThreadlineFramework`
 
 **Workflow**:
 ```python
@@ -398,8 +398,8 @@ def test_chunking():
 ```python
 # test_integration.py
 def test_full_workflow():
-    tama = TAMAFramework(api_key=os.getenv("OPENAI_API_KEY"))
-    result = tama.run_analysis(sample_transcript)
+    framework = ThreadlineFramework(api_key=os.getenv("OPENAI_API_KEY"))
+    result = framework.run_analysis(sample_transcript)
     assert result['accepted'] or result['refinement_iterations'] == 5
     assert len(result['final_themes']) > 0
 ```

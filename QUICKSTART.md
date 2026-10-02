@@ -1,6 +1,6 @@
-# TAMA Framework - Quick Start Guide
+# Threadline Framework - Quick Start Guide
 
-Get started with TAMA in 5 minutes!
+Get started with Threadline in 5 minutes!
 
 ## Step 1: Install (1 minute)
 
@@ -46,10 +46,14 @@ Create a Python script:
 
 ```python
 import os
-from src.tama import TAMAFramework, load_transcript
+import sys
+from pathlib import Path
 
-# Initialize TAMA
-tama = TAMAFramework(
+sys.path.insert(0, str(Path("src").resolve()))
+from tama import ThreadlineFramework, load_transcript
+
+# Initialize Threadline
+framework = ThreadlineFramework(
     api_key=os.getenv("OPENAI_API_KEY"),
     model="gpt-4o",
     max_iterations=5,
@@ -60,7 +64,7 @@ tama = TAMAFramework(
 transcript = load_transcript("path/to/your/transcript.txt")
 
 # Run analysis
-result = tama.run_analysis(
+result = framework.run_analysis(
     transcript=transcript,
     session_name="my_first_analysis",
     save_intermediate=True
@@ -75,7 +79,7 @@ print(f"  Results saved to: outputs/my_first_analysis/")
 
 ## What You'll Get
 
-After running TAMA, you'll find in `outputs/[session_name]/`:
+After running Threadline, you'll find in `outputs/[session_name]/`:
 
 📄 **00_summary.txt** - Human-readable summary of themes
 ```
@@ -103,7 +107,7 @@ After running TAMA, you'll find in `outputs/[session_name]/`:
 
 ### Use Faster Model (Lower Cost)
 ```python
-tama = TAMAFramework(
+framework = ThreadlineFramework(
     api_key=api_key,
     model="gpt-4o-mini"  # Faster and cheaper
 )
@@ -111,7 +115,7 @@ tama = TAMAFramework(
 
 ### Higher Quality Standards
 ```python
-tama = TAMAFramework(
+framework = ThreadlineFramework(
     api_key=api_key,
     acceptance_threshold=4.5,  # Stricter quality requirement
     max_iterations=7           # More refinement opportunities
@@ -127,7 +131,7 @@ expert_criteria = {
     "relevance": "must reflect actual patient statements"
 }
 
-tama = TAMAFramework(
+framework = ThreadlineFramework(
     api_key=api_key,
     expert_criteria=expert_criteria
 )

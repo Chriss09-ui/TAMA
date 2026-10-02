@@ -1,5 +1,5 @@
 """
-TAMA: A Human-AI Collaborative Thematic Analysis Framework Using Multi-Agent LLMs
+Threadline: Human-AI collaborative qualitative analysis
 Main orchestrator coordinating Generation, Evaluation, and Refinement agents.
 """
 
@@ -64,9 +64,9 @@ def link_themes_to_codes(themes, codes):
     return linked
 
 
-class TAMAFramework:
+class ThreadlineFramework:
     """
-    TAMA Framework orchestrator that coordinates multi-agent workflow:
+    Threadline orchestrator that coordinates multi-agent workflow:
     1. Generation Agent: Chunks -> Codes -> Themes
     2. Evaluation Agent: Evaluates themes against criteria
     3. Refinement Agent: Refines themes based on feedback
@@ -94,7 +94,7 @@ class TAMAFramework:
         analysis_mode: str = "thematic",
     ):
         """
-        Initialize TAMA Framework.
+        Initialize Threadline Framework.
 
         Args:
             api_key: API key for the selected model provider
@@ -170,7 +170,7 @@ class TAMAFramework:
         include_previous_context: bool = False,
     ) -> Dict[str, Any]:
         """
-        Run complete TAMA analysis with iterative refinement.
+        Run complete Threadline analysis with iterative refinement.
 
         Args:
             transcript: Interview transcript text
@@ -184,7 +184,7 @@ class TAMAFramework:
             Dictionary containing final themes and analysis metadata
         """
         if session_name is None:
-            session_name = f"tama_session_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
+            session_name = f"threadline_session_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
         if os.path.basename(session_name) != session_name or session_name in (".", ".."):
             raise ValueError("session_name must be a single directory name")
 
@@ -227,7 +227,7 @@ class TAMAFramework:
                     candidate = f"{session_name}_{uuid.uuid4().hex[:8]}"
 
         print("=" * 80)
-        print(f"TAMA FRAMEWORK - Session: {session_name}")
+        print(f"THREADLINE - Session: {session_name}")
         print("=" * 80)
 
         # Phase 1: Generation
@@ -445,7 +445,7 @@ class TAMAFramework:
             self._write_research_records(session_dir, final_result)
 
         print("\n" + "=" * 80)
-        print("TAMA ANALYSIS COMPLETE")
+        print("THREADLINE ANALYSIS COMPLETE")
         print("=" * 80)
 
         return final_result
@@ -487,6 +487,10 @@ class TAMAFramework:
         with open(summary_path, "w", encoding="utf-8") as handle:
             handle.write(render_summary_text(result))
         print(f"✓ Human-readable summary saved to: {summary_path}")
+
+
+# Preserve the import used by scripts written before the project rename.
+TAMAFramework = ThreadlineFramework
 
 
 def load_transcript(file_path: str) -> str:

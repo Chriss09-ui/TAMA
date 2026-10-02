@@ -11,7 +11,7 @@ sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT))
 
 from example_usage import get_model_config
-from tama import TAMAFramework
+from tama import ThreadlineFramework
 from agents.evaluation_agent import EvaluationAgent
 from agents.generation_agent import GenerationAgent
 from agents.refinement_agent import RefinementAgent
@@ -43,7 +43,7 @@ class MiMoConfigTests(unittest.TestCase):
             with patch("tama.GenerationAgent") as generation, \
                     patch("tama.EvaluationAgent") as evaluation, \
                     patch("tama.RefinementAgent") as refinement:
-                TAMAFramework(
+                ThreadlineFramework(
                     api_key="mimo-test",
                     model="mimo-v2.5-pro",
                     output_dir=output_dir,

@@ -1,8 +1,8 @@
 """
-TAMA: A Human-AI Collaborative Thematic Analysis Framework Using Multi-Agent LLMs
+Threadline: Human-AI collaborative qualitative analysis
 """
 
-from .tama import TAMAFramework, load_transcript
+from .tama import ThreadlineFramework, TAMAFramework, load_transcript
 
 __version__ = "1.0.0"
-__all__ = ['TAMAFramework', 'load_transcript']
+__all__ = ['ThreadlineFramework', 'TAMAFramework', 'load_transcript']

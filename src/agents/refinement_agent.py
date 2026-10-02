@@ -1,5 +1,5 @@
 """
-Refinement Agent for TAMA Framework
+Refinement Agent for Threadline Framework
 Refines themes based on evaluation feedback using four operations:
 - Add: Add missing important themes
 - Split: Split themes containing multiple concepts

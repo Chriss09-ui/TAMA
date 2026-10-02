@@ -1,5 +1,5 @@
 """
-Example Usage of TAMA Framework
+Example Usage of Threadline Framework
 Demonstrates how to run thematic analysis on interview transcripts.
 """
 
@@ -9,7 +9,7 @@ import sys
 # Add src directory to path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'src'))
 
-from tama import TAMAFramework, load_transcript
+from tama import ThreadlineFramework, load_transcript
 from decisions.jev_client import JevDecisionClient
 from model_config import api_model_name
 
@@ -52,7 +52,7 @@ def get_model_config():
 
 def main():
     """
-    Main function demonstrating TAMA framework usage.
+    Main function demonstrating Threadline framework usage.
     """
     # Configuration
     api_key, model, base_url = get_model_config()
@@ -69,9 +69,9 @@ def main():
         "relevance": "每个主题都应有访谈材料作为依据，不添加未经证实的假设。",
     }
 
-    # Initialize TAMA framework
-    print("Initializing TAMA Framework...")
-    tama = TAMAFramework(
+    # Initialize Threadline framework
+    print("Initializing Threadline Framework...")
+    framework = ThreadlineFramework(
         api_key=api_key,
         model=model,
         base_url=base_url,
@@ -93,9 +93,9 @@ def main():
     transcript = load_transcript(TRANSCRIPT_PATH)
     print(f"Transcript loaded: {len(transcript.split())} words")
 
-    # Run TAMA analysis
-    print("\nStarting TAMA analysis...\n")
-    result = tama.run_analysis(
+    # Run Threadline analysis
+    print("\nStarting Threadline analysis...\n")
+    result = framework.run_analysis(
         transcript=transcript,
         session_name="example_analysis",  # Optional: name for this session
         save_intermediate=True  # Save intermediate results for transparency
