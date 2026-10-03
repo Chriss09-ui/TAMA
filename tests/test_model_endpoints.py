@@ -1,16 +1,14 @@
-import os
+"""Connection settings at the framework-to-agent and agent-to-client boundaries."""
+
 import sys
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
-sys.path.insert(0, str(ROOT))
 
-from example_usage import get_model_config
 from tama import ThreadlineFramework
 from agents.evaluation_agent import EvaluationAgent
 from agents.generation_agent import GenerationAgent
@@ -18,26 +16,7 @@ from agents.refinement_agent import RefinementAgent
 from research_profile import ResearchProfile
 
 
-class MiMoConfigTests(unittest.TestCase):
-    def test_example_selects_mimo_with_default_endpoint(self):
-        with patch.dict(os.environ, {"MIMO_API_KEY": "mimo-test"}, clear=True):
-            self.assertEqual(
-                get_model_config(),
-                ("mimo-test", "mimo-v2.5-pro", "https://api.xiaomimimo.com/v1")
-            )
-
-    def test_example_uses_token_plan_endpoint(self):
-        with patch.dict(
-            os.environ,
-            {"MIMO_API_KEY": "mimo-test", "MIMO_BASE_URL": "https://plan.example/v1"},
-            clear=True
-        ):
-            self.assertEqual(get_model_config()[2], "https://plan.example/v1")
-
-    def test_example_keeps_openai_default(self):
-        with patch.dict(os.environ, {"OPENAI_API_KEY": "openai-test"}, clear=True):
-            self.assertEqual(get_model_config(), ("openai-test", "gpt-4o", None))
-
+class ModelEndpointTests(unittest.TestCase):
     def test_framework_passes_endpoint_to_all_agents(self):
         with tempfile.TemporaryDirectory() as output_dir:
             with patch("tama.GenerationAgent") as generation, \

@@ -2,15 +2,16 @@ import sys
 import unittest
 from pathlib import Path
 from threading import Barrier, Event, Lock
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from evidence_fixtures import matched_code
-from agents.evaluation_agent import EvaluationAgent, EvaluationResult
+from agents.evaluation_agent import EvaluationAgent
 from agents.generation_agent import Chunk, Code, GenerationAgent
 from analysis_job import AnalysisJob
+from decisions.base import DecisionAnswer, DecisionProvider
 
 
 class ParallelRequestTests(unittest.TestCase):
@@ -36,33 +37,53 @@ class ParallelRequestTests(unittest.TestCase):
         self.assertEqual([code.description for code in codes], ["编码 0", "编码 1", "编码 2"])
 
     def test_theme_evaluation_runs_concurrently_and_keeps_theme_order(self):
-        with patch("agents.evaluation_agent.OpenAI"):
-            agent = EvaluationAgent(api_key="test", max_workers=3)
         barrier = Barrier(3, timeout=3)
-        last_finished = Event()
+        finished = [Event() for _ in range(3)]
+        completion_order = []
+        requests = {}
+        lock = Lock()
         themes = [{"name": f"主题 {i}", "description": "描述", "codes": [], "code_ids": [i]} for i in range(3)]
+        codes = [matched_code(code_id=i, description=f"编码{i}").model_dump() for i in range(3)]
 
-        def evaluate(theme, all_themes, original_codes):
-            barrier.wait()
-            if theme["name"] == "主题 0" and not last_finished.wait(3):
-                raise TimeoutError("last theme did not finish first")
-            if theme["name"] == "主题 2":
-                last_finished.set()
-            return EvaluationResult(
-                theme_name=theme["name"], coverage_score=4, coverage_feedback="可以",
-                actionability_score=4, actionability_feedback="可以",
-                distinctiveness_score=4, distinctiveness_feedback="可以",
-                relevance_score=4, relevance_feedback="可以", overall_score=4.0,
-                needs_refinement=False, refinement_suggestions=[],
-            )
+        class BlockingProvider(DecisionProvider):
+            name = "blocking-stub"
 
-        with patch.object(agent, "evaluate_theme", side_effect=evaluate):
-            result = agent.evaluate_all_themes(themes, [matched_code(code_id=i, description=f"编码{i}").model_dump() for i in range(3)])
+            def ask(self, state, questions):
+                index = state["theme"]["code_ids"][0]
+                with lock:
+                    requests[index] = (state, questions)
+                barrier.wait()
+                if index < 2 and not finished[index + 1].wait(3):
+                    raise TimeoutError("next request did not finish first")
+                answers = {key: DecisionAnswer(key=key, kind="score",
+                    score=3.0 + index * 0.5 if key == "coverage" else 3.0, confidence=0.95)
+                    for key in ("coverage", "actionability", "distinctiveness", "relevance")}
+                answers["needs_refinement"] = DecisionAnswer(key="needs_refinement", kind="noul",
+                    probability=0.1, confidence=0.9)
+                with lock:
+                    completion_order.append(index)
+                finished[index].set()
+                return answers
 
+        with patch("agents.evaluation_agent.OpenAI"):
+            agent = EvaluationAgent(api_key="test", max_workers=3, decision_provider=BlockingProvider())
+        agent.client = Mock()
+        result = agent.evaluate_all_themes(themes, codes)
+
+        self.assertEqual(completion_order, [2, 1, 0])
         self.assertEqual([item.theme_name for item in result.theme_evaluations], [
             "主题 0", "主题 1", "主题 2",
         ])
-        self.assertEqual(result.average_score, 4.0)
+        self.assertEqual([item.overall_score for item in result.theme_evaluations], [4.0, 4.125, 4.25])
+        self.assertEqual([item.raw_scores["coverage"] for item in result.theme_evaluations], [3.0, 3.5, 4.0])
+        self.assertEqual(result.average_score, 4.125)
+        self.assertTrue(result.is_acceptable)
+        self.assertEqual(set(requests), {0, 1, 2})
+        for index, (state, questions) in requests.items():
+            self.assertEqual(state["theme"]["name"], themes[index]["name"])
+            self.assertEqual(state["original_codes"][index]["excerpt"], codes[index]["excerpt"])
+            self.assertEqual(set(questions), {"coverage", "actionability", "distinctiveness", "relevance", "needs_refinement"})
+        agent.client.chat.completions.create.assert_not_called()
 
     def test_pause_blocks_queued_parallel_requests(self):
         with patch("agents.generation_agent.OpenAI"):

@@ -1,0 +1,765 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="基于当前项目实现，说明一份访谈文稿如何经过编码、比较、主题生成、全文回查、评估与研究者复核。">
+  <title>Threadline · 一份访谈文稿的处理流程</title>
+  <style>
+    :root {
+      --desk: #e8e5da; --paper: #faf8f1; --white: #fffefa;
+      --ink: #24352e; --soft: #55665d; --pine: #245947; --deep: #163c2e;
+      --sage: #eaf0e8; --line: #d8ddcf; --amber: #94651b; --sand: #f5ecd9;
+      --rust: #994b30; --rose: #f3e8df;
+      --serif: "Songti SC", "STSong", "Noto Serif SC", "SimSun", serif;
+      --sans: "PingFang SC", "Microsoft YaHei", "Helvetica Neue", sans-serif;
+      --mono: "SFMono-Regular", Consolas, "PingFang SC", monospace;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; padding-bottom: 98px; background: var(--desk); color: var(--ink); font: 17px/1.7 var(--sans); }
+    button { font: inherit; color: inherit; cursor: pointer; }
+    button:focus-visible, a:focus-visible, summary:focus-visible { outline: 3px solid var(--amber); outline-offset: 4px; }
+    button:disabled { opacity: .4; cursor: default; }
+    button, a, summary { -webkit-tap-highlight-color: transparent; }
+    h1, h2, h3, p, blockquote, figure { margin: 0; }
+    h1, h2 { font-family: var(--serif); font-weight: 600; letter-spacing: -.03em; line-height: 1.35; }
+    h1 { font-size: clamp(34px, 4vw, 52px); }
+    h2 { font-size: clamp(27px, 3.2vw, 36px); }
+    h3 { font-size: 20px; font-weight: 600; line-height: 1.5; }
+    p + p { margin-top: 12px; }
+    strong { font-weight: 600; }
+    small, .small { font-size: 14px; line-height: 1.65; }
+    code { font: 13px/1.65 var(--mono); overflow-wrap: anywhere; }
+    .topbar { max-width: 1280px; margin: 20px auto 16px; display: flex; gap: 20px; align-items: center; justify-content: space-between; padding: 0 4px; }
+    .brand { color: var(--deep); font-size: 21px; font-weight: 600; letter-spacing: -.03em; }
+    .brand span { font-size: 13px; font-weight: 400; letter-spacing: .02em; margin-left: 16px; color: var(--soft); }
+    .edition { font-size: 13px; color: var(--soft); }
+    main { max-width: 1280px; margin: auto; }
+    .sheet { display: none; position: relative; flex-direction: column; min-height: 685px; padding: 40px 48px 26px; background: var(--paper); box-shadow: 0 12px 35px #24352e12; }
+    .sheet.active { display: flex; }
+    .eyebrow { display: flex; align-items: center; gap: 12px; color: var(--pine); font-size: 13px; letter-spacing: .1em; margin-bottom: 10px; }
+    .eyebrow .num { font-family: var(--mono); font-size: 14px; letter-spacing: 0; }
+    .lead { color: var(--soft); margin: 13px 0 24px; max-width: 1020px; }
+    .content { flex: 1; }
+    .footer { margin-top: 26px; padding-top: 12px; border-top: 1px solid var(--line); display: flex; justify-content: space-between; gap: 16px; font-size: 12px; color: var(--soft); }
+    .footer span:last-child { white-space: nowrap; font-family: var(--mono); }
+    .green { color: var(--pine); }
+    .muted { color: var(--soft); }
+    .cols { display: grid; grid-template-columns: 1fr 1fr; gap: 28px; }
+    .cols.wide-left { grid-template-columns: 1.24fr 1fr; }
+    .cols.wide-right { grid-template-columns: 1fr 1.2fr; }
+    .col { min-width: 0; }
+    .col > h3 { margin-bottom: 12px; }
+    .panel { background: var(--white); border: 1px solid var(--line); padding: 23px 25px; }
+    .panel.green-panel { background: var(--sage); border-color: #cfdbcf; }
+    .panel.sand-panel { background: var(--sand); border-color: #e4d9be; }
+    .panel > h3 { margin-bottom: 10px; }
+    .panel + .panel { margin-top: 16px; }
+    .label { display: inline-block; font-size: 12px; color: var(--pine); border: 1px solid #c4d2c5; padding: 2px 9px; line-height: 1.65; margin-bottom: 10px; }
+    .label.example { color: var(--amber); border-color: #d9c49c; background: var(--sand); }
+    .list { padding: 0; margin: 0; list-style: none; }
+    .list li { position: relative; padding-left: 17px; margin: 11px 0; }
+    .list li::before { content: "·"; position: absolute; left: 0; color: var(--pine); font-weight: 600; }
+    .note { padding: 13px 18px; border-left: 3px solid var(--pine); background: var(--sage); margin-top: 20px; font-size: 15px; }
+    .note.amber { background: var(--sand); border-color: var(--amber); }
+    .note.rust { background: var(--rose); border-color: var(--rust); }
+    .quote { font-family: var(--serif); font-size: 21px; line-height: 1.85; padding-left: 20px; border-left: 3px solid #adc3af; }
+    mark { background: #dce9d7; color: var(--deep); padding: 1px 3px; }
+    .speaker { font: 13px/1.5 var(--sans); color: var(--soft); margin-bottom: 9px; display: block; }
+    .proofline { display: flex; align-items: stretch; margin-top: 24px; gap: 0; }
+    .proof { flex: 1; min-width: 0; padding: 16px 18px; background: var(--white); border-top: 3px solid var(--pine); }
+    .proof b { display: block; color: var(--pine); font-size: 13px; font-weight: 500; margin-bottom: 7px; }
+    .proof p { font-size: 18px; line-height: 1.6; }
+    .arrow { color: #76907b; flex: 0 0 32px; display: grid; place-items: center; font-size: 24px; }
+    .cover { padding-top: 50px; }
+    .cover .lead { max-width: 790px; font-size: 19px; margin-bottom: 24px; }
+    .cover-quote { margin: 18px 0 0; padding: 22px 25px; background: var(--sage); }
+    .cover-quote .quote { border: 0; padding: 0; font-size: 22px; }
+    .cover-tail { margin-top: 23px; font-size: 14px; color: var(--soft); }
+    .flow { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; }
+    .flow-item { border-top: 2px solid #b8cbb7; padding: 14px 15px 13px; background: var(--white); }
+    .flow-item .step { font: 13px var(--mono); color: var(--pine); }
+    .flow-item h3 { font-size: 19px; margin: 8px 0 6px; }
+    .flow-item p { color: var(--soft); font-size: 15px; line-height: 1.6; }
+    .roles { display: flex; gap: 24px; flex-wrap: wrap; align-items: baseline; margin-top: 24px; padding-top: 16px; border-top: 1px solid var(--line); font-size: 15px; }
+    .roles b { color: var(--pine); }
+    .row { display: grid; grid-template-columns: 104px 1fr; gap: 16px; padding: 14px 0; border-bottom: 1px solid var(--line); }
+    .row:first-child { padding-top: 0; }
+    .row:last-child { border-bottom: 0; padding-bottom: 0; }
+    .row .key { color: var(--pine); font-weight: 600; }
+    .row .value { min-width: 0; }
+    .row .value p { font-size: 15px; }
+    .method { padding: 20px 23px; border-top: 3px solid var(--pine); background: var(--white); }
+    .method h3 { margin-bottom: 8px; }
+    .method .sample { margin-top: 15px; padding-top: 12px; border-top: 1px solid var(--line); font-size: 16px; }
+    .table-wrap { width: 100%; overflow-x: auto; }
+    table { width: 100%; border-collapse: collapse; table-layout: fixed; text-align: left; }
+    th { color: var(--pine); font-size: 14px; font-weight: 500; padding: 10px 14px; background: var(--sage); }
+    td { padding: 14px; border-bottom: 1px solid var(--line); vertical-align: top; font-size: 16px; line-height: 1.65; overflow-wrap: anywhere; }
+    td small { display: block; color: var(--soft); margin-top: 5px; font-size: 13px; }
+    .codeid { font: 12px/1.5 var(--mono); color: var(--soft); display: block; margin-bottom: 4px; }
+    .example-table th:first-child { width: 20%; }
+    .example-table th:nth-child(2) { width: 38%; }
+    .example-table th:nth-child(3) { width: 28%; }
+    .example-table th:last-child { width: 14%; }
+    .check { display: flex; align-items: center; gap: 16px; margin: 18px 0 0; }
+    .check .sign { font: 20px var(--mono); color: var(--pine); }
+    .check.bad .sign { color: var(--rust); }
+    .check > div { min-width: 0; }
+    .check small { display: block; color: var(--soft); }
+    .boundary { display: grid; grid-template-columns: 1fr auto 1fr; gap: 14px; align-items: center; margin: 18px 0; }
+    .boundary .word { padding: 12px 16px; background: var(--sage); font-size: 16px; }
+    .boundary .connector { color: var(--pine); font-size: 15px; }
+    .mapping { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; }
+    .mapping .level { border-top: 3px solid var(--pine); padding: 20px 18px; background: var(--white); }
+    .mapping h3 { font-size: 19px; margin: 8px 0 14px; }
+    .mapping .mini { color: var(--soft); font-size: 14px; margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--line); }
+    .mapping .example-name { color: var(--deep); font-size: 17px; line-height: 1.8; }
+    .thesis { font-family: var(--serif); font-size: 24px; line-height: 1.65; margin: 8px 0 15px; color: var(--deep); }
+    .theme-fields { display: grid; grid-template-columns: 80px 1fr; gap: 8px 16px; font-size: 15px; }
+    .theme-fields dt { color: var(--pine); }
+    .theme-fields dd { margin: 0; }
+    .review-lanes { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+    .review-lane { padding: 20px 23px; background: var(--white); border-top: 3px solid #a7bda5; }
+    .review-lane h3 { margin-bottom: 12px; }
+    .review-lane .quote { font-size: 18px; line-height: 1.75; padding-left: 14px; min-height: 96px; }
+    .review-lane p { font-size: 15px; margin-top: 16px; }
+    .rubric { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+    .criterion { display: grid; grid-template-columns: 75px 1fr; gap: 15px; padding: 18px 21px; background: var(--white); border: 1px solid var(--line); }
+    .criterion h3 { color: var(--pine); font-size: 19px; }
+    .criterion p { font-size: 16px; }
+    .criterion small { display: block; margin-top: 6px; color: var(--soft); }
+    .threshold { display: flex; align-items: center; gap: 22px; margin-top: 21px; padding: 18px 23px; background: var(--sage); }
+    .threshold .score { font-family: var(--serif); font-size: 35px; color: var(--pine); white-space: nowrap; line-height: 1.3; }
+    .threshold .score small { font: 14px var(--sans); }
+    .threshold p { font-size: 16px; }
+    .operations { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+    .operation { padding: 18px 20px; background: var(--white); border-top: 2px solid #a6bfa5; }
+    .operation h3 { margin-bottom: 7px; font-size: 18px; }
+    .operation p { color: var(--soft); font-size: 15px; }
+    .stop-row { padding: 12px 0; border-bottom: 1px solid var(--line); }
+    .stop-row:last-child { border-bottom: 0; }
+    .stop-row p { font-size: 15px; color: var(--soft); margin-top: 3px; }
+    .report-title { margin-bottom: 14px; }
+    .report-lines { border-top: 1px solid var(--line); }
+    .report-lines > div { padding: 12px 0; border-bottom: 1px solid var(--line); font-size: 15px; }
+    .report-lines strong { display: inline-block; width: 80px; color: var(--pine); }
+    .task-table th:first-child { width: 18%; }
+    .task-table th:nth-child(2) { width: 40%; }
+    .task-table th:last-child { width: 42%; }
+    .task-table td { padding: 12px 14px; font-size: 15px; }
+    .ending { display: grid; grid-template-columns: 1fr 1fr; gap: 28px; }
+    .ending-steps { border-top: 2px solid var(--pine); }
+    .ending-steps p { padding: 13px 0; border-bottom: 1px solid var(--line); font-size: 17px; margin: 0; }
+    .ending-steps b { font-weight: 500; color: var(--pine); margin-right: 12px; }
+    .fact { padding: 15px 0; border-bottom: 1px solid var(--line); }
+    .fact:first-child { padding-top: 0; }
+    .fact:last-child { border-bottom: 0; }
+    .fact h3 { font-size: 18px; margin-bottom: 5px; }
+    .fact p { font-size: 15px; color: var(--soft); }
+    .sources { display: grid; grid-template-columns: 1fr 1fr; gap: 12px 26px; }
+    .sources details { border-top: 1px solid var(--line); padding: 12px 0; }
+    .sources summary { color: var(--pine); cursor: pointer; font-size: 16px; }
+    .sources details p { font-size: 14px; color: var(--soft); margin-top: 9px; }
+    .sources code { display: block; margin-top: 6px; color: var(--ink); }
+    .controls { position: fixed; bottom: 14px; left: 50%; transform: translateX(-50%); z-index: 20; width: calc(100% - 56px); max-width: 1280px; margin: 0; display: flex; align-items: center; gap: 10px; padding: 10px 12px; flex-wrap: wrap; background: var(--paper); border: 1px solid var(--line); box-shadow: 0 5px 20px #24352e12; }
+    .controls button, .close { min-height: 40px; background: var(--paper); border: 1px solid #c4cbbd; border-radius: 4px; padding: 6px 15px; font-size: 14px; }
+    .controls .primary { background: var(--pine); border-color: var(--pine); color: var(--white); }
+    .counter { min-width: 67px; text-align: center; font: 13px var(--mono); color: var(--soft); }
+    .grow { flex: 1; }
+    .keyhint { color: var(--soft); font-size: 12px; margin-right: 8px; }
+    .progress { position: fixed; bottom: 75px; left: 50%; transform: translateX(-50%); z-index: 21; width: calc(100% - 56px); max-width: 1280px; height: 3px; margin: 0; background: #d5dbcf; }
+    .progress > div { height: 100%; background: var(--pine); transition: width .15s ease; }
+    dialog { border: 1px solid #cbd3c2; background: var(--paper); color: var(--ink); max-width: 1050px; width: calc(100% - 40px); padding: 30px; max-height: 88vh; overflow: auto; box-shadow: 0 20px 80px #163c2e30; }
+    dialog::backdrop { background: #1d342da6; }
+    .dialoghead { display: flex; justify-content: space-between; gap: 16px; align-items: center; margin-bottom: 22px; }
+    .dialoghead h2 { font-size: 26px; }
+    .index { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
+    .index button { text-align: left; padding: 15px; background: var(--white); border: 1px solid var(--line); min-height: 112px; }
+    .index button[aria-current="page"] { background: var(--sage); border-color: var(--pine); }
+    .index .number { font: 12px var(--mono); color: var(--pine); display: block; margin-bottom: 7px; }
+    .index b { font-size: 16px; font-weight: 500; display: block; }
+    .index small { font-size: 12px; color: var(--soft); display: block; margin-top: 5px; }
+    .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0; }
+    body.reading .sheet { display: flex; margin-bottom: 26px; }
+    body.reading .controls .paging, body.reading .progress, body.reading .keyhint { display: none; }
+    @media (max-width: 1360px) { .topbar, main { margin-left: 28px; margin-right: 28px; } }
+    @media (min-width: 1001px) and (max-height: 820px) {
+      body { font-size: 15.5px; }
+      .topbar { margin-top: 14px; margin-bottom: 12px; }
+      .sheet { min-height: calc(100svh - 153px); padding: 25px 36px 20px; }
+      h1 { font-size: 42px; } h2 { font-size: 30px; } h3 { font-size: 18px; }
+      .eyebrow { margin-bottom: 8px; }
+      .lead { font-size: 15.5px; margin: 10px 0 18px; }
+      .cover { padding-top: 31px; }
+      .cover .lead { font-size: 17px; margin: 10px 0 16px; }
+      .cover-quote { margin-top: 12px; padding: 17px 22px; }
+      .cover-quote .quote { font-size: 20px; }
+      .proofline { margin-top: 18px; }
+      .proof { padding: 12px 15px; }
+      .proof p { font-size: 16px; }
+      .cover-tail { margin-top: 17px; font-size: 13px; }
+      .panel, .method { padding: 18px 20px; }
+      .list li { margin-top: 8px; margin-bottom: 8px; }
+      .row { padding: 10px 0; font-size: 15px; line-height: 1.65; }
+      .row .value p { font-size: 14px; }
+      .quote { font-size: 19px; }
+      .note { font-size: 14px; margin-top: 15px; padding: 10px 15px; }
+      .flow-item { padding: 12px 14px; }
+      .flow-item h3 { font-size: 18px; margin: 6px 0; }
+      .flow-item p { font-size: 14px; }
+      .roles { margin-top: 18px; padding-top: 12px; font-size: 14px; }
+      .method .sample { margin-top: 12px; padding-top: 10px; font-size: 15px; }
+      .example-table td { padding: 8px 14px; font-size: 15px; }
+      .mapping .level { padding: 17px; }
+      .mapping .example-name { font-size: 16px; }
+      .criterion { padding: 15px 19px; }
+      .criterion p { font-size: 15px; }
+      .threshold { padding: 14px 20px; margin-top: 17px; }
+      .operation { padding: 15px 18px; }
+      .stop-row { padding: 7px 0; }
+      .stop-row p { font-size: 14px; }
+      .task-table td { font-size: 14px; padding: 10px 14px; }
+      .ending-steps p { font-size: 16px; padding: 11px 0; }
+      .fact { padding: 12px 0; }
+      .fact p { font-size: 14px; }
+      .footer { display: none; }
+    }
+    @media (max-width: 1000px) {
+      .sheet { padding: 32px; min-height: 640px; }
+      .flow, .mapping { grid-template-columns: repeat(2, 1fr); }
+      .proofline { flex-wrap: wrap; gap: 12px; }
+      .proofline .proof { flex: 1 1 40%; }
+      .proofline .arrow { display: none; }
+      .index { grid-template-columns: repeat(3, 1fr); }
+      .review-lane { padding: 18px; }
+      .review-lane .quote { min-height: 0; }
+    }
+    @media (max-width: 720px) {
+      body { font-size: 16px; }
+      .topbar, main { margin-left: 14px; margin-right: 14px; }
+      .controls, .progress { width: calc(100% - 28px); }
+      .progress { bottom: 79px; }
+      .topbar { margin-top: 15px; margin-bottom: 13px; }
+      .brand span, .edition, .keyhint { display: none; }
+      .sheet { padding: 25px 22px 20px; min-height: 0; }
+      .cols, .cols.wide-left, .cols.wide-right, .ending, .review-lanes, .sources, .rubric { grid-template-columns: 1fr; gap: 20px; }
+      .cover .lead { font-size: 17px; }
+      .cover-quote { padding: 18px; }
+      .quote, .cover-quote .quote { font-size: 19px; }
+      .proof p { font-size: 16px; }
+      .flow-item { padding: 13px; }
+      .flow-item h3 { font-size: 17px; }
+      .flow-item p { font-size: 14px; }
+      .method, .panel { padding: 20px; }
+      .lead { margin-bottom: 20px; }
+      .table-wrap table { min-width: 635px; }
+      .example-table td { font-size: 15px; }
+      .table-hint { display: block !important; color: var(--soft); font-size: 12px; margin-bottom: 8px; }
+      .threshold { align-items: flex-start; gap: 17px; padding: 18px; }
+      .threshold .score { font-size: 30px; }
+      .criterion { grid-template-columns: 66px 1fr; padding: 17px; }
+      .footer { font-size: 11px; gap: 10px; }
+      .controls { gap: 8px; }
+      .controls button { min-height: 44px; padding: 6px 12px; }
+      .grow { display: none; }
+      .counter { min-width: 55px; }
+      .index { grid-template-columns: repeat(2, 1fr); gap: 10px; }
+      dialog { padding: 20px; }
+      .boundary { grid-template-columns: 1fr; gap: 7px; }
+      .boundary .connector { text-align: center; }
+    }
+    @media (max-width: 420px) {
+      .sheet { padding: 22px 18px 18px; }
+      .row { grid-template-columns: 80px 1fr; gap: 12px; }
+      .operations, .mapping { grid-template-columns: 1fr; }
+      .proofline { display: grid; grid-template-columns: 1fr; }
+      .proofline .proof { padding: 13px 16px; }
+      .cover-tail { font-size: 13px; }
+      body { padding-bottom: 155px; }
+      .controls { justify-content: center; }
+      .progress { bottom: 131px; }
+      .index { grid-template-columns: 1fr; }
+      .index button { min-height: 80px; }
+    }
+    @media (prefers-reduced-motion: reduce) { *, *::before, *::after { transition: none !important; scroll-behavior: auto !important; } }
+    @media print {
+      @page { size: A4 landscape; margin: 10mm; }
+      body { padding: 0; background: white; font-size: 12px; }
+      .topbar, .controls, .progress, dialog, .table-hint { display: none !important; }
+      main { max-width: none; margin: 0; }
+      .sheet, body.reading .sheet { display: flex; box-shadow: none; min-height: 174mm; padding: 8mm; margin: 0; break-after: page; }
+      .sheet:last-child { break-after: auto; }
+      h1 { font-size: 32px; } h2 { font-size: 25px; } h3 { font-size: 16px; }
+      .lead { margin-bottom: 15px; }
+      .panel, .method { padding: 15px; }
+      .flow { grid-template-columns: repeat(4, 1fr); }
+      .mapping { grid-template-columns: repeat(4, 1fr); }
+      .proofline { flex-wrap: nowrap; }
+      .proofline .proof { flex: 1; }
+      .proofline .arrow { display: grid; }
+      .footer { margin-top: 15px; }
+      .sources details { break-inside: avoid; }
+      .sources details p { display: block; }
+      * { print-color-adjust: exact; -webkit-print-color-adjust: exact; }
+    }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">Threadline <span>访谈文稿 · 处理流程与编码策略</span></div>
+    <div class="edition">依据当前项目实现 · 2026.10.02</div>
+  </header>
+
+  <main id="deck" aria-label="项目处理流程讲解">
+    <section class="sheet cover active" data-title="文稿如何变成分析" data-note="原话 → 编码 → 类别 → 候选主题" aria-labelledby="title-1">
+      <div class="eyebrow">项目讲解 <span>／</span> Threadline</div>
+      <h1 id="title-1">一份访谈文稿，<br>怎样变成<span class="green">可检查的分析</span></h1>
+      <p class="lead">它会从文稿里识别有意义的内容，给这些内容编码，再比较、归类和形成候选主题。每一步保留原话与分析理由，最后交给研究者复核。</p>
+      <div class="content">
+        <div class="cover-quote">
+          <span class="label example">虚构示例 · 全篇示例均为人工演示，未调用模型</span>
+          <blockquote class="quote">“每周我把群里的投诉<mark>抄到表里</mark>，开会时只挑<mark>重复出现</mark>的说。”</blockquote>
+        </div>
+        <div class="proofline" aria-label="从原话到候选主题的示例">
+          <div class="proof"><b>原话</b><p>保留受访者怎么说</p></div><span class="arrow" aria-hidden="true">→</span>
+          <div class="proof"><b>编码</b><p>整理客户投诉<br>筛选重复反馈</p></div><span class="arrow" aria-hidden="true">→</span>
+          <div class="proof"><b>类别</b><p>让反馈进入讨论的做法</p></div><span class="arrow" aria-hidden="true">→</span>
+          <div class="proof"><b>候选主题</b><p>记录与重复出现，影响反馈进入讨论的机会</p></div>
+        </div>
+        <p class="cover-tail">这份讲解沿用《TAMA项目讲解.html》的形式；内容按当前 Threadline 代码重新梳理。</p>
+      </div>
+    </section>
+
+    <section class="sheet" data-title="完整处理流程" data-note="八个环节，主题会循环修订" aria-labelledby="title-2">
+      <div class="eyebrow"><span class="num">01</span> 全流程</div>
+      <h2 id="title-2">先看整条处理流程</h2>
+      <p class="lead">一次提交处理本次文稿。下表按实际顺序排列，评估与修订会在同一次任务里循环。</p>
+      <div class="content">
+        <div class="flow">
+          <div class="flow-item"><span class="step">1 →</span><h3>接收与切块</h3><p>提取文字，登记来源，按自然边界分成模型可处理的片段。</p></div>
+          <div class="flow-item"><span class="step">2 →</span><h3>初始编码与校验</h3><p>识别意义单元，命名，附逐字原话；程序检查摘录是否存在。</p></div>
+          <div class="flow-item"><span class="step">3 →</span><h3>比较与编码簿</h3><p>比较原话及语境，归并同义编码，写定义和适用边界。</p></div>
+          <div class="flow-item"><span class="step">4 →</span><h3>类别与概念</h3><p>把不同但有关联的编码归类，再尝试形成更抽象的概念。</p></div>
+          <div class="flow-item"><span class="step">5 →</span><h3>候选主题</h3><p>组织共享意义模式，写支持理由、反例、未知和故事线草稿。</p></div>
+          <div class="flow-item"><span class="step">6 →</span><h3>全文回查一次</h3><p>默认开启。逐片复查全文；有效补码会带动编码簿和主题更新。</p></div>
+          <div class="flow-item"><span class="step">7 ↔</span><h3>评估与修订</h3><p>按四项标准评分，按反馈增、拆、并、删，再评估。</p></div>
+          <div class="flow-item"><span class="step">8</span><h3>复核与导出</h3><p>研究者核对证据、补写诠释，下载报告与完整分析记录。</p></div>
+        </div>
+        <div class="roles"><b>模型分三个工作角色</b><span>生成：编码与主题</span><span>评估：评分与反馈</span><span>修订：调整主题</span></div>
+        <p class="small muted" style="margin-top:10px">默认三个角色使用同一个所选模型，靠不同指令分工。评分可另选实验性的 Jev；多角色分工本身不能证明分析可靠。</p>
+      </div>
+    </section>
+
+    <section class="sheet" data-title="输入与切块" data-note="处理片段和编码单元是两回事" aria-labelledby="title-3">
+      <div class="eyebrow"><span class="num">02</span> 文稿进入系统</div>
+      <h2 id="title-3">先保留原稿，再按语境切成片段</h2>
+      <p class="lead">切块解决的是一次给模型读多少文字；编码单元取决于文字表达了几个相对完整的意思。</p>
+      <div class="content cols wide-left">
+        <div class="col">
+          <div class="row"><div class="key">输入形式</div><div class="value"><strong>粘贴文本 / UTF-8 TXT / Word DOCX</strong><p>Word 按文档顺序提取正文段落与表格。音频、扫描件和图片需要先转成文字。</p></div></div>
+          <div class="row"><div class="key">研究方向</div><div class="value"><strong>研究问题、关注点、来源信息均可填写</strong><p>这些信息进入分析指令。通用模式没有固定领域标签；另有“企业能力与证据链”配置。</p></div></div>
+          <div class="row"><div class="key">切块方式</div><div class="value"><strong>按全文长度规划，优先保留自然边界</strong><p>优先在新问题、段落、说话人轮次或句末切分；超出长度上限时仍可能拆开长回答。</p></div></div>
+          <div class="row"><div class="key">保留什么</div><div class="value"><strong>本次原文、来源编号、片段位置与原稿校验值</strong><p>为后续原话定位和恢复报告时核验原稿提供依据。</p></div></div>
+        </div>
+        <div class="col panel green-panel">
+          <h3>同一个片段，可以产生多个编码</h3>
+          <blockquote class="quote" style="margin-top:16px">“把群里的投诉抄到表里，开会时只挑重复出现的说。”</blockquote>
+          <div class="boundary"><div class="word">整理客户投诉</div><div class="connector">＋</div><div class="word">筛选重复反馈</div></div>
+          <p class="small">前半句是记录做法，后半句是选择讨论内容的做法。模型按含义分别编码，不要求“一行一个码”或“一个片段一个码”。</p>
+          <p class="small muted">短稿可能只用一个片段。网页默认“自动 · 均衡”，可选更细、少调用或手动设置；各片段先分别编码，再统一比较。</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="sheet" data-title="初始编码策略" data-note="意义单元、过程编码与实境编码" aria-labelledby="title-4">
+      <div class="eyebrow"><span class="num">03</span> 编码策略</div>
+      <h2 id="title-4">从材料起步，用研究问题引导注意力</h2>
+      <p class="lead">模型按意义单元识别经历、观点、情境、矛盾、反例和未知。关注点用于聚焦，材料没涉及的内容不要求硬套。</p>
+      <div class="content">
+        <div class="cols">
+          <div class="method"><span class="label">主要使用</span><h3>过程编码：概括在做什么</h3><p>用过程性短语表达一个相对完整的行动、经历或判断，尽量具体到做法。</p><div class="sample">“把群里的投诉抄到表里”<br><span class="green">→ 整理客户投诉</span></div></div>
+          <div class="method"><span class="label">材料适合时使用</span><h3>实境编码：直接保留原词</h3><p>有意义的原话或隐喻可以直接作编码名，并标记为原话编码；文档也称“内生编码”。</p><div class="sample">“给问题留个底”<br><span class="green">→ 给问题留个底</span></div></div>
+        </div>
+        <div class="note"><strong>第一轮只写临时名称。</strong> 此时不先写死定义、包含和排除条件；等全部初始编码放在一起比较后，再建立编码簿。</div>
+        <ul class="list small" style="margin-top:17px">
+          <li>不按访谈提纲逐题填表，也不预先规定必须产出几个编码。</li>
+          <li>每条编码附能支持它的连续原话；访谈者的提问不能当作受访者的经历。</li>
+          <li>编码由模型依据指令提出，名称和意义是否恰当仍需研究者核对。</li>
+        </ul>
+      </div>
+    </section>
+
+    <section class="sheet" data-title="原话如何被编码" data-note="用具体摘录展示四条初始编码" aria-labelledby="title-5">
+      <div class="eyebrow"><span class="num">04</span> 编码示例 <span class="label example" style="margin:0;letter-spacing:0">虚构 · 非实际运行结果</span></div>
+      <h2 id="title-5">同一段访谈，可以这样产生初始编码</h2>
+      <p class="lead">示例研究问题：团队如何把客户反馈带进讨论？下面逐条展示原话、编码名和编码方式。</p>
+      <div class="content">
+        <p class="table-hint" style="display:none">表格可向左右滑动查看。</p>
+        <div class="table-wrap"><table class="example-table"><caption class="sr-only">虚构访谈的初始编码示例</caption><thead><tr><th scope="col">原话说话人</th><th scope="col">逐字摘录</th><th scope="col">临时编码名</th><th scope="col">方式</th></tr></thead><tbody>
+          <tr><td>受访者 A</td><td>每周我把群里的投诉抄到表里</td><td><span class="codeid">编码 C01（示意编号）</span><strong>整理客户投诉</strong></td><td>过程编码</td></tr>
+          <tr><td>受访者 A</td><td>开会时只挑重复出现的说</td><td><span class="codeid">编码 C02</span><strong>筛选重复反馈</strong></td><td>过程编码</td></tr>
+          <tr><td>受访者 A</td><td>客户怎么说就照着写，免得换成我们的意思</td><td><span class="codeid">编码 C03</span><strong>保留客户原话</strong></td><td>过程编码</td></tr>
+          <tr><td>受访者 A</td><td>给问题留个底</td><td><span class="codeid">编码 C04</span><strong>给问题留个底</strong><small>名称直接来自受访者用语</small></td><td>实境编码</td></tr>
+        </tbody></table></div>
+        <div class="note"><strong>这些是受访者对做法的描述。</strong> 指令要求标明陈述性质和核实状态。原话里说“我会这么做”，本身不能证明这项做法已被外部材料核实。</div>
+        <p class="small muted" style="margin-top:13px">实际输出还会记录编号、来源片段、原文位置、附近语境、明确出现的说话人标签、关注点及待核查问题；程序内部使用数字编号。</p>
+      </div>
+    </section>
+
+    <section class="sheet" data-title="证据校验" data-note="摘录存在和事情属实要分开看" aria-labelledby="title-6">
+      <div class="eyebrow"><span class="num">05</span> 编码与原文的连接</div>
+      <h2 id="title-6">每条有效编码，都要在原稿里找到原话</h2>
+      <p class="lead">模型提交编码后，程序先在所属片段查找摘录，再按来源和字符位置核对全文。概括句不能冒充逐字证据。</p>
+      <div class="content cols">
+        <div class="col panel">
+          <h3>程序能直接检查的部分</h3>
+          <div class="check"><span class="sign">✓</span><div><strong>“开会时只挑重复出现的说”</strong><small>如果原稿逐字包含这句，保留摘录起止位置和附近语境。</small></div></div>
+          <div class="check bad"><span class="sign">×</span><div><strong>“团队按频率分配会议资源”</strong><small>这是概括。若原稿没有这句话，不能作为原文摘录。</small></div></div>
+          <div class="note rust"><strong>找不到原话：</strong>保留待核查编码与失败原因，但不让它参与归并、类别映射、主题生成和评分。</div>
+        </div>
+        <div class="col">
+          <h3>同时区分两层状态</h3>
+          <div class="row"><div class="key">原文匹配</div><div class="value">摘录是否真实出现在这份文稿中？<p>由程序比较文字与位置。</p></div></div>
+          <div class="row"><div class="key">现实核实</div><div class="value">受访者说的事情，是否有实际材料支持？<p>按提供的材料标记为材料支持、仅受访者报告、有冲突或未知；不自行做外部调查。</p></div></div>
+          <p class="small muted" style="margin-top:20px">例如“报告已经公开”可以在访谈中逐字匹配，但没有实际报告或公开来源时，仍只能记为受访者报告。</p>
+          <p class="small"><strong>逐字匹配能防止引文失真；编码的含义是否贴切、陈述是否属实，是另外的判断。</strong></p>
+        </div>
+      </div>
+    </section>
+
+    <section class="sheet" data-title="比较与编码簿" data-note="比较意义后归并，再写清适用边界" aria-labelledby="title-7">
+      <div class="eyebrow"><span class="num">06</span> 编码簿形成</div>
+      <h2 id="title-7">先比较原话和语境，再归并同义编码</h2>
+      <p class="lead">这个环节统一的是含义相同的编码。名称相近只是线索，具体条件、做法和意义有差别时要保持分开。</p>
+      <div class="content cols wide-left">
+        <div class="col">
+          <div class="row"><div class="key">精确去重</div><div class="value">同一标签、同一来源、同一位置、同一摘录和语境的重复记录才去重。<p>同名但来自不同原话的编码，仍保留各自证据。</p></div></div>
+          <div class="row"><div class="key">模型归并</div><div class="value">把各条原话、来源与语境交给模型比较；模型提出同义组、逐条适用判断与归并理由。</div></div>
+          <div class="row"><div class="key">程序检查</div><div class="value">编号必须存在，同一编码不能重复分组。不适用某定义的条目保持独立；归并结果无法使用时保留原编码。</div></div>
+          <div class="row"><div class="key">保留变化</div><div class="value">原始编号和原话继续保留，记录并入关系与定义修改历史；修改后提示回查关联摘录。</div></div>
+        </div>
+        <div class="col panel green-panel">
+          <span class="label example">虚构编码簿条目</span>
+          <h3>整理客户投诉</h3>
+          <div class="row"><div class="key">定义</div><div class="value small">把群里的客户投诉转写成可回看的记录。</div></div>
+          <div class="row"><div class="key">包含</div><div class="value small">抄录、誊写或汇总投诉原话。</div></div>
+          <div class="row"><div class="key">排除</div><div class="value small">只在群里阅读、即时回复，未形成记录。</div></div>
+          <div class="row"><div class="key">正例</div><div class="value small">“每周我把群里的投诉抄到表里”</div></div>
+          <p class="small" style="margin-top:17px">“抄录群内投诉”可能归入这一编码；“筛选重复反馈”表达另一项做法，应另外保留。</p>
+          <p class="small muted">有效编码少于两条时，自动归并环节会跳过，定义可能仍留空。</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="sheet" data-title="编码到类别与概念" data-note="同义归并之后，做更高层的归类" aria-labelledby="title-8">
+      <div class="eyebrow"><span class="num">07</span> 编码的第二层整理</div>
+      <h2 id="title-8">不同的做法，可以归进同一个类别</h2>
+      <p class="lead">前一步归并同义编码，这一步把不同但有关联的编码组织起来。项目保留四层映射，每一层都能回到具体编码编号。</p>
+      <div class="content">
+        <div class="mapping">
+          <div class="level"><span class="codeid">第一层 →</span><h3>代码全集</h3><p class="example-name">整理客户投诉<br>保留客户原话<br>筛选重复反馈</p><p class="mini">列出归并后的全部规范编码。</p></div>
+          <div class="level"><span class="codeid">第二层 →</span><h3>类别</h3><p class="example-name">记录反馈的做法<br>选择讨论内容的做法</p><p class="mini">归类时说明做法之间的联系。</p></div>
+          <div class="level"><span class="codeid">第三层 →</span><h3>更少的类别</h3><p class="example-name">让反馈进入讨论的做法</p><p class="mini">尝试收拢类别，合不起来就保持分开。</p></div>
+          <div class="level"><span class="codeid">第四层</span><h3>概念</h3><p class="example-name">把反馈转成可讨论的记录</p><p class="mini">更抽象的短语，仍然保留支持编码。</p></div>
+        </div>
+        <div class="note"><strong>这些类别和概念都来自比较。</strong> 不能因为编码出现得多就归成一类，也不要求每层都必须“收得更少”。上面是虚构映射示例。</div>
+        <p class="small muted" style="margin-top:15px">归并或归类时出现的模式、矛盾和不确定性，会写进编码备忘录。没被模型归入类别的编码会单独保留；概念短语本身还不是理论。</p>
+      </div>
+    </section>
+
+    <section class="sheet" data-title="形成候选主题" data-note="主题要说明共享意义，并带支持理由" aria-labelledby="title-9">
+      <div class="eyebrow"><span class="num">08</span> 主题生成</div>
+      <h2 id="title-9">主题要说清楚：这些编码共同说明了什么</h2>
+      <p class="lead">模型结合编码、类别映射和编码备忘录归纳候选主题。每个主题引用具体编码，还要写明为什么这些材料构成同一个模式。</p>
+      <div class="content cols wide-right">
+        <div class="col">
+          <h3>主题生成的要求</h3>
+          <ul class="list">
+            <li>组织共享意义，超出“客户反馈”“会议流程”这样的单纯话题名称。</li>
+            <li>保留支持编码、反例、未解决问题和解释边界。</li>
+            <li>同一人的多次陈述，不能当成多个独立案例；单案例材料不能写成跨案例模式。</li>
+            <li>主题之间形成一句“如何一起回答研究问题”的故事线草稿。</li>
+          </ul>
+          <p class="small muted" style="margin-top:18px">发现可以标为共享模式、信息断点、反例、证据缺口或候选机制。材料不支持时，不强行生成机制，也不能宣称因果已证实。</p>
+        </div>
+        <div class="col panel green-panel">
+          <span class="label example">虚构候选主题</span>
+          <p class="thesis">记录与重复出现，影响反馈进入讨论的机会</p>
+          <dl class="theme-fields">
+            <dt>支持</dt><dd>C01 整理客户投诉；C02 筛选重复反馈；C03 保留客户原话。</dd>
+            <dt>理由</dt><dd>几条编码分别涉及反馈如何成为记录、记录怎样保持原意，以及哪些反馈被选进会议。</dd>
+            <dt>尚不确定</dt><dd>这是否是团队共同做法？其他成员是否用不同的筛选标准？本段没有交代。</dd>
+            <dt>当前边界</dt><dd>目前只有受访者 A 的描述，不能据此代表所有团队。</dd>
+          </dl>
+          <p class="small muted" style="margin-top:17px">这些支持理由和未知也会进入主题备忘录，方便后面评估、修订与人工核对。</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="sheet" data-title="全文回查" data-note="候选主题形成后，逐片回读全文一次" aria-labelledby="title-10">
+      <div class="eyebrow"><span class="num">09</span> 默认开启 · 一次全文回查</div>
+      <h2 id="title-10">带着候选主题，回头检查全文遗漏了什么</h2>
+      <p class="lead">每个片段会连同候选主题摘要和本片段已有编码，再给模型读一遍。下面展示三类回查发现可能长什么样。</p>
+      <div class="content">
+        <div class="review-lanes">
+          <div class="review-lane"><h3>遗漏的支持</h3><blockquote class="quote">“回头要查是哪条投诉，就翻那张表。”</blockquote><p>如果第一轮漏掉，可以补充“回看投诉记录”，说明记录如何被实际使用。</p></div>
+          <div class="review-lane"><h3>反例</h3><blockquote class="quote">“有些抱怨只出现一次，反而影响很大。”</blockquote><p>挑战“重复出现才值得关注”的解释，保留为反证或主题边界。</p></div>
+          <div class="review-lane"><h3>解释条件</h3><blockquote class="quote">“赶着上线的时候，表就顾不上填了。”</blockquote><p>提示记录做法受时间压力限制，避免把它写成始终成立的规则。</p></div>
+        </div>
+        <div class="proofline" style="margin-top:22px"><div class="proof"><b>检查发现</b><p>找逐字原话</p></div><span class="arrow" aria-hidden="true">→</span><div class="proof"><b>有效补码</b><p>追加编号、保留来源</p></div><span class="arrow" aria-hidden="true">→</span><div class="proof"><b>有新增有效编码时</b><p>重新整理编码簿、类别和主题</p></div></div>
+        <p class="small muted" style="margin-top:15px">三条均为虚构回查示例。全文回查只做一次，不会每轮评分都重跑。某些片段回查失败会明确标注，本次结果仍可保留，但整体不能显示通过。</p>
+      </div>
+    </section>
+
+    <section class="sheet" data-title="四项评估标准" data-note="逐主题、逐项评分，平均分不能遮住短板" aria-labelledby="title-11">
+      <div class="eyebrow"><span class="num">10</span> 主题评估</div>
+      <h2 id="title-11">四项检查，判断候选主题是否需要修订</h2>
+      <p class="lead">按 1—5 分的明确描述评分。评估主要读取主题、编码和关联原话及语境；完整全文另由前面的回查环节检查。</p>
+      <div class="content">
+        <div class="rubric">
+          <div class="criterion"><h3>覆盖度</h3><div><p>重要内容有没有得到位置？反例和未知有没有被保留？</p><small>4 分：重要内容有位置，反例和未知保留。</small></div></div>
+          <div class="criterion"><h3>模式性</h3><div><p>是否提出了有编码支持的共享意义模式？</p><small>4 分：模式清楚，有编码支撑。仅是访谈章节或话题摘要，最高 2 分。</small></div></div>
+          <div class="criterion"><h3>区分度</h3><div><p>与其他主题是否有清楚区别？有没有换词重复？</p><small>4 分：界限清楚，仅边缘材料可能两边都相关。</small></div></div>
+          <div class="criterion"><h3>相关性</h3><div><p>判断能否回到具体原话？有没有把受访者解释当成已证实原因？</p><small>4 分：可追溯，并区分受访者说法与可核验事实。</small></div></div>
+        </div>
+        <div class="threshold"><div class="score">≥ 4 <small>/ 5</small></div><div><p><strong>默认要求每个可评分主题的每一项都达标，并且无需修订。</strong></p><p class="small">平均分也须达标。缺少有效支持的发现不能通过；启用的全文回查也必须完整完成。</p></div></div>
+        <p class="small muted" style="margin-top:14px">反例、信息断点和证据缺口单独保留，不按共享模式评分。低置信度判断会提示人工复核；模型的分数和置信度都只是检查辅助。</p>
+      </div>
+    </section>
+
+    <section class="sheet" data-title="修订与停止" data-note="增、拆、并、删；达到停止条件后保留当前结果" aria-labelledby="title-12">
+      <div class="eyebrow"><span class="num">11</span> 主题迭代</div>
+      <h2 id="title-12">评分不合格，就按具体问题调整主题</h2>
+      <p class="lead">修订角色读取候选主题、评分反馈、原始编码与分析备忘录，提出操作和理由。修订后重新关联证据，再进入下一轮评估。</p>
+      <div class="content cols wide-left">
+        <div class="col">
+          <div class="operations">
+            <div class="operation"><h3>增加</h3><p>已有编码支持某个重要模式，但主题中漏掉了，就补一个主题。</p></div>
+            <div class="operation"><h3>拆分</h3><p>一个主题混合了不同概念，就拆成各自清楚的主题。</p></div>
+            <div class="operation"><h3>合并</h3><p>两个主题大部分说同一件事，就合成一个。</p></div>
+            <div class="operation"><h3>删除 / 降级</h3><p>没有分析意义的访谈章节、重复内容或不贴合材料的主题，移出主题列表。</p></div>
+          </div>
+          <div class="note"><strong>调整主题时继续保留反例和未知。</strong> 独立的反例、信息断点及证据缺口不会交给模式修订去删除；删除的主题若带核查信息，也会留下记录。</div>
+        </div>
+        <div class="col panel">
+          <h3>程序会在这些情况下停止</h3>
+          <div class="stop-row"><strong>评分达标</strong><p>达到逐项标准，并满足全文回查要求。</p></div>
+          <div class="stop-row"><strong>连续两轮没有明显改善</strong><p>默认触发早停，避免反复调整却没有进展。</p></div>
+          <div class="stop-row"><strong>达到最多评估轮次</strong><p>网页默认最多 5 轮，保留当前结果和未解决问题。</p></div>
+          <div class="stop-row"><strong>没有有效证据或可评分主题</strong><p>显示“未评分”。回查不完整也不能通过。</p></div>
+          <p class="small green" style="margin-top:13px">停止原因和每轮分数都会记录。程序结束不代表研究已经完成，也不代表理论饱和。</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="sheet" data-title="结果与导出" data-note="Word 是报告，JSON 保留原稿及完整记录" aria-labelledby="title-13">
+      <div class="eyebrow"><span class="num">12</span> 结果呈现</div>
+      <h2 id="title-13">交付候选分析，也交付回到原稿的路径</h2>
+      <p class="lead">网页里可以查编码、证据、主题、评分与分析过程，展开引文所属问答或段落，确认它放回语境后是否仍然成立。</p>
+      <div class="content cols">
+        <div class="col panel">
+          <h3 class="report-title">Word 报告：供阅读和写作</h3>
+          <div class="report-lines">
+            <div><strong>原文引证</strong>精选原话、编码编号、陈述性质与核实状态。</div>
+            <div><strong>候选分析</strong>主题、支持理由、反例、不确定性和待核查问题。</div>
+            <div><strong>人工诠释</strong>研究者保存的主题解释和整体论证；未填写处留出位置。</div>
+          </div>
+          <p class="small muted" style="margin-top:16px">Word 不附整篇原稿；可选择附精选引文的语境。自动生成的分析理由还需要研究者判断和修改。</p>
+        </div>
+        <div class="col panel green-panel">
+          <h3 class="report-title">完整 JSON：供保存和回看</h3>
+          <ul class="list small">
+            <li>本次全文、来源编号与原稿校验值。</li>
+            <li>编码、匹配状态、定义、归并记录与类别映射。</li>
+            <li>主题、全文回查、评分史、修订史、停止原因。</li>
+            <li>备忘录、已保存诠释、解释比较和研究者复核状态。</li>
+          </ul>
+          <p class="small" style="margin-top:14px">可在网页载入已保存 JSON，核对原稿后查看和编辑报告；载入本身不调用模型。</p>
+        </div>
+      </div>
+      <div class="note"><strong>网页默认关闭自动落盘。</strong> 可手动下载 Word 和 JSON；开启本地保存后，再把结果、编码簿和研究记录写入 <code>outputs/本次会话/</code>。阶段文件需另行开启保存。</div>
+    </section>
+
+    <section class="sheet" data-title="研究者复核" data-note="比较原话、诠释主题、判断解释边界" aria-labelledby="title-14">
+      <div class="eyebrow"><span class="num">13</span> 人机分工</div>
+      <h2 id="title-14">研究者接着做的，是判断这些解释能否成立</h2>
+      <p class="lead">网页提供比较和记录工具。修改研究记录、填写诠释、标记复核状态，这些操作本身不调用模型。</p>
+      <div class="content">
+        <p class="table-hint" style="display:none">表格可向左右滑动查看。</p>
+        <div class="table-wrap"><table class="task-table"><caption class="sr-only">软件支持与研究者判断的分工</caption><thead><tr><th scope="col">环节</th><th scope="col">项目提供的支持</th><th scope="col">研究者的判断</th></tr></thead><tbody>
+          <tr><td>原话与比较</td><td>展开语境；按参与者、案例、说话人标签、事件或时间查看支持与反对材料。</td><td>确认同一句话是否被理解恰当，比较不同情境，确认匿名分组依据。</td></tr>
+          <tr><td>主题诠释</td><td>保留候选主题、理由、未知；提供按稳定主题编号保存诠释的入口。</td><td>写明这些材料意味着什么，以及研究问题究竟能回答到哪一步。</td></tr>
+          <tr><td>解释比较</td><td>为不同解释关联支持、反证、边界和未解决问题。</td><td>选择更合理的解释，说明取舍理由，记录研究者复核状态。</td></tr>
+          <tr><td>建构扎根理论支持</td><td>增加聚焦编码、类属属性、关系、资料充分性判断与论证记录。</td><td>发展和审查类属，判断资料是否充分；当前工具不开展抽样或采访。</td></tr>
+        </tbody></table></div>
+        <div class="note"><strong>模型评分通过与研究者已复核是两种状态。</strong> 人工复核需要明确的理由；已复核的诠释、论证或证据分组改动后，会回到待复核。</div>
+        <p class="small muted" style="margin-top:12px">说话人标签不会自动等同参与者身份。重复出现次数、证据位置数、参与者数和案例数分别计数，次数多不能直接说明研究意义更大。</p>
+      </div>
+    </section>
+
+    <section class="sheet" data-title="流程与边界回看" data-note="一次分析的产物与适用范围" aria-labelledby="title-15">
+      <div class="eyebrow"><span class="num">14</span> 回看</div>
+      <h2 id="title-15">你放进一份文稿，会得到这样一条分析链</h2>
+      <p class="lead">核心产物是可回溯的编码和候选分析。记录保留到哪里，研究者就能检查到哪里。</p>
+      <div class="content ending">
+        <div class="ending-steps">
+          <p><b>文稿</b>保留原文与来源，按自然边界切块。</p>
+          <p><b>编码</b>按意义单元命名，逐条附原话与状态。</p>
+          <p><b>编码簿</b>比较和归并，写定义、包含与排除。</p>
+          <p><b>类别与主题</b>整理联系，提出有证据的候选模式。</p>
+          <p><b>检查与修订</b>回查全文一次，评分、修订、再评分。</p>
+          <p><b>研究报告</b>保留证据、理由和过程，交给研究者复核。</p>
+        </div>
+        <div>
+          <div class="fact"><h3>每次网页提交独立处理本次材料</h3><p>内部多轮评估属于同一次分析；载入旧报告用于查看和编辑，不会自动接着分析新文稿。</p></div>
+          <div class="fact"><h3>模型读取相关研究材料</h3><p>界面在本机运行，分析时会把相关文稿、编码与主题发送给所选模型服务；启用 Jev 时，评估内容也发送给 Jev。</p></div>
+          <div class="fact"><h3>私人记录另行保留</h3><p>自反记录与明确标记的私人手记不加入模型提示词；主动提交的研究问题和分析方向会影响分析。</p></div>
+          <div class="fact"><h3>留下材料允许的判断</h3><p>逐字证据、模型评分和自动停止都不能独自证明结论有效。尚未交代的内容保留未知，最终解释由研究者确认。</p></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="sheet" data-title="实现依据" data-note="可展开查看本讲解对应的代码" aria-labelledby="title-16">
+      <div class="eyebrow"><span class="num">15</span> 可选阅读 · 实现依据</div>
+      <h2 id="title-16">这份讲解对应项目里的哪些实现</h2>
+      <p class="lead">内容依据当前工作区代码。下面按环节列出文件和关键函数，可展开核对；此前文档中的设想，以当前实现为准。</p>
+      <div class="content">
+        <div class="sources">
+          <details><summary>输入、保存设置与网页入口</summary><p>正文及表格提取、输入格式、默认切块方式、全文回查、最多轮次及下载入口。</p><code>streamlit_app.py<br>extract_docx_text / read_transcript / main / render_result</code></details>
+          <details><summary>自然边界切块</summary><p>按长度规划非重叠片段，优先选择自然边界；长回答受上限约束，并平衡短尾段。</p><code>src/chunking.py<br>resolve_chunk_plan / _boundary_candidates / plan_chunks</code></details>
+          <details><summary>初始编码方式与原文核验</summary><p>过程性短语、原话编码、临时命名、陈述性质；逐字匹配、起止位置和附近语境。</p><code>src/prompts.py · build_code_extraction_prompt<br>src/agents/generation_agent.py · codes_from_data<br>src/evidence.py · validate_evidence</code></details>
+          <details><summary>编码比较、归并与类别映射</summary><p>同一证据去重、同义归并、定义历史、四层映射与未分组编码保留。</p><code>src/codebook.py · exact_merge / semantic_merge<br>src/agents/generation_agent.py · consolidate_codebook / map_codes<br>src/code_mapping.py · build_code_map</code></details>
+          <details><summary>主题与全文回查</summary><p>共享意义、支持理由、反例与未知；逐片回查一次，有有效新增时重新整理编码和主题。</p><code>src/prompts.py · build_theme_generation_prompt / build_corpus_review_prompt<br>src/agents/generation_agent.py · generate_themes / review_corpus / run</code></details>
+          <details><summary>评分、修订与停止条件</summary><p>四项评分锚点、逐项验收、增拆并删、早停与未完成状态。</p><code>src/agents/evaluation_agent.py · evaluate_all_themes<br>src/agents/refinement_agent.py · apply_refinement_plan<br>src/tama.py · run_analysis<br>src/analysis_records.py · scorable_themes</code></details>
+          <details><summary>报告与研究者记录</summary><p>原文引证、分析、人工诠释；解释比较、稳定主题编号、复核失效及建构扎根理论记录。</p><code>src/reporting.py · report_lines<br>src/analysis_records.py / src/research_ui.py / src/review_ui.py<br>src/research_records.py / src/research_profile.py</code></details>
+          <details><summary>私人手记与参考说明</summary><p>私人手记、自反记录不进模型；整体说明和方法对照用于补充理解。</p><code>src/memos.py · memos_for_model<br>src/reflexivity.py<br>README.md / METHODOLOGY.md<br>编码手册对照/项目如何符合编码手册.md</code></details>
+        </div>
+        <div class="note amber">本次完成项目阅读和讲解页制作，没有对真实访谈发起模型分析。页面所有访谈摘录、编码、类别与候选主题示例均为虚构人工演示。</div>
+      </div>
+    </section>
+  </main>
+
+  <div class="progress" role="progressbar" aria-label="阅读进度" aria-valuemin="1" aria-valuemax="16" aria-valuenow="1"><div id="progress-fill"></div></div>
+  <nav class="controls" aria-label="讲解页导航">
+    <button type="button" id="previous" class="paging" aria-label="上一页">← 上一页</button>
+    <span class="counter paging" id="counter" aria-hidden="true">01 / 16</span>
+    <button type="button" id="next" class="primary paging" aria-label="下一页">下一页 →</button>
+    <span class="grow"></span><span class="keyhint">← → 翻页 · O 总览</span>
+    <button type="button" id="overview" aria-haspopup="dialog" aria-controls="contents">总览</button>
+    <button type="button" id="reading" aria-pressed="false">连续阅读</button>
+  </nav>
+  <p class="sr-only" id="status" aria-live="polite" aria-atomic="true"></p>
+  <dialog id="contents" aria-labelledby="contents-title">
+    <div class="dialoghead"><h2 id="contents-title">全部页面</h2><button type="button" class="close" id="close-index" aria-label="关闭总览">关闭 ×</button></div>
+    <div class="index" id="index"></div>
+  </dialog>
+  <script>
+    (() => {
+      const sheets = [...document.querySelectorAll('.sheet')];
+      const previous = document.getElementById('previous');
+      const next = document.getElementById('next');
+      const counter = document.getElementById('counter');
+      const progress = document.querySelector('.progress');
+      const fill = document.getElementById('progress-fill');
+      const status = document.getElementById('status');
+      const contents = document.getElementById('contents');
+      const index = document.getElementById('index');
+      const reading = document.getElementById('reading');
+      let current = 0;
+      let continuous = false;
+      const pad = number => String(number).padStart(2, '0');
+
+      sheets.forEach((sheet, position) => {
+        sheet.id = `page-${position + 1}`;
+        const footer = document.createElement('footer');
+        footer.className = 'footer';
+        const label = document.createElement('span');
+        label.textContent = 'Threadline · 访谈文稿的处理流程';
+        const number = document.createElement('span');
+        number.textContent = `${pad(position + 1)} / ${sheets.length}`;
+        footer.append(label, number);
+        sheet.append(footer);
+        const entry = document.createElement('button');
+        entry.type = 'button';
+        entry.dataset.page = position;
+        const count = document.createElement('span');
+        count.className = 'number';
+        count.textContent = pad(position + 1);
+        const title = document.createElement('b');
+        title.textContent = sheet.dataset.title;
+        const note = document.createElement('small');
+        note.textContent = sheet.dataset.note;
+        entry.append(count, title, note);
+        entry.addEventListener('click', () => {
+          contents.close();
+          show(position, true);
+        });
+        index.append(entry);
+      });
+
+      function show(position, scroll = false) {
+        current = Math.max(0, Math.min(sheets.length - 1, position));
+        sheets.forEach((sheet, number) => {
+          sheet.classList.toggle('active', number === current);
+          sheet.hidden = !continuous && number !== current;
+        });
+        counter.textContent = `${pad(current + 1)} / ${sheets.length}`;
+        fill.style.width = `${((current + 1) / sheets.length) * 100}%`;
+        progress.setAttribute('aria-valuenow', current + 1);
+        previous.disabled = current === 0;
+        next.disabled = current === sheets.length - 1;
+        [...index.children].forEach((entry, number) => {
+          if (number === current) entry.setAttribute('aria-current', 'page');
+          else entry.removeAttribute('aria-current');
+        });
+        status.textContent = `第 ${current + 1} 页，共 ${sheets.length} 页：${sheets[current].dataset.title}`;
+        history.replaceState(null, '', `#${current + 1}`);
+        if (scroll) {
+          if (continuous) sheets[current].scrollIntoView({ block: 'start' });
+          else window.scrollTo({ top: 0 });
+        }
+      }
+
+      previous.addEventListener('click', () => show(current - 1, true));
+      next.addEventListener('click', () => show(current + 1, true));
+      document.getElementById('overview').addEventListener('click', () => contents.showModal());
+      document.getElementById('close-index').addEventListener('click', () => contents.close());
+      reading.addEventListener('click', () => {
+        if (continuous) {
+          let nearest = current;
+          let distance = Infinity;
+          sheets.forEach((sheet, number) => {
+            const candidate = Math.abs(sheet.getBoundingClientRect().top - 20);
+            if (candidate < distance) { distance = candidate; nearest = number; }
+          });
+          current = nearest;
+        }
+        continuous = !continuous;
+        document.body.classList.toggle('reading', continuous);
+        reading.setAttribute('aria-pressed', String(continuous));
+        reading.textContent = continuous ? '返回翻页' : '连续阅读';
+        show(current, true);
+      });
+      document.addEventListener('keydown', event => {
+        if (event.ctrlKey || event.metaKey || event.altKey || contents.open) return;
+        if (['INPUT', 'TEXTAREA', 'SELECT', 'SUMMARY', 'BUTTON'].includes(event.target.tagName) && event.key === ' ') return;
+        if (event.key.toLowerCase() === 'o') { event.preventDefault(); contents.showModal(); return; }
+        if (continuous) return;
+        if (['ArrowRight', 'PageDown'].includes(event.key)) { event.preventDefault(); show(current + 1, true); }
+        else if (['ArrowLeft', 'PageUp'].includes(event.key)) { event.preventDefault(); show(current - 1, true); }
+        else if (event.key === 'Home') { event.preventDefault(); show(0, true); }
+        else if (event.key === 'End') { event.preventDefault(); show(sheets.length - 1, true); }
+      });
+      window.addEventListener('hashchange', () => {
+        const page = Number(location.hash.slice(1));
+        if (Number.isInteger(page) && page >= 1 && page <= sheets.length) show(page - 1, true);
+      });
+      window.addEventListener('beforeprint', () => sheets.forEach(sheet => { sheet.hidden = false; }));
+      window.addEventListener('afterprint', () => show(current));
+      const initial = Number(location.hash.slice(1));
+      show(Number.isInteger(initial) && initial >= 1 && initial <= sheets.length ? initial - 1 : 0);
+    })();
+  </script>
+</body>
+</html>

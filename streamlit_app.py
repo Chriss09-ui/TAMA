@@ -40,6 +40,12 @@ from reflexivity import (
     save_reflexivity,
 )
 from reporting import report_lines
+from report_document import configure_report, add_report_block
+from report_library import local_reports, load_library_report, report_label
+from ui_design import (
+    load_styles, workspace_header, report_identity, narrative, evidence_quote,
+    theme_badges, theme_outline, theme_heading, review_brief,
+)
 from next_data_plan import GROUP_ORDER, material_review_text
 from evidence import EVIDENCE_LABELS, REVIEW_KIND_LABELS, is_matched
 from research_ui import research_inputs, render_research_tools
@@ -282,15 +288,9 @@ def read_transcript(source: str, pasted_text: str, uploaded_file) -> str:
 def build_result_docx(result: dict, reflexivity: dict | None = None, interpretations: list | None = None) -> bytes:
     """Create a readable Word report with quotes, analysis, and blank interpretation."""
     document = Document()
-    heading_levels = {"title": 0, "h1": 1, "h2": 2, "h3": 3}
+    configure_report(document)
     for kind, text in report_lines(result, reflexivity, interpretations):
-        level = heading_levels.get(kind)
-        if level is not None:
-            document.add_heading(text, level)
-        elif kind == "bullet":
-            document.add_paragraph(text, style="List Bullet")
-        else:
-            document.add_paragraph(text)
+        add_report_block(document, kind, text)
     buffer = BytesIO()
     document.save(buffer)
     return buffer.getvalue()
@@ -364,75 +364,119 @@ def render_corpus_review(result, code_by_id) -> None:
 
 
 def render_result(result: dict) -> None:
-    """Display the latest analysis without exposing the API key."""
+    """Keep reading, evidence inspection, editing, and export in distinct views."""
+    if result.get("legacy_read_only"):
+        report_identity(result)
+        st.title("访谈分析报告")
+        st.info("旧版报告 · 仅供阅读。这份报告未保留可核验的原文与证据记录；主题和编码需要研究者核对。")
+        for index, theme in enumerate(result["final_themes"], 1):
+            theme_heading(index, theme)
+            st.write(theme["description"])
+            with st.expander(f"查看编码 · {len(theme.get('codes', []))} 条"):
+                for code in theme.get("codes", []):
+                    st.write(code)
+        return
     ensure_theme_ids(result)
     scope = result["analysis_id"]
     if st.session_state.get("_result_widget_scope") != scope:
         reset_result_widgets()
         st.session_state["_result_widget_scope"] = scope
-    st.header("3. 分析结果")
-    st.caption("本次独立分析")
-
+    report_identity(result)
+    st.title("访谈分析报告")
     status = {
         "accepted": "本轮主题评估通过", "no_improvement": "本轮连续评估未提升，已停止自动修订",
         "max_iterations": "本轮已达到最大评估轮次",
         "no_valid_evidence": "没有可参与分析的有效原文证据",
         "no_valid_themes": "没有可评估的有效主题",
         "corpus_review_incomplete": "全文回查未完整完成",
-    }.get(result.get("stop_reason"), "本轮主题评估通过" if result["accepted"] else "本轮自动处理结束")
-    score = result["metadata"]["final_average_score"]
-    themes = result["final_themes"]
-    code_by_id = {code.get("code_id"): code for code in result.get("codes", [])}
-
+    }.get(result.get("stop_reason"), "本轮主题评估通过" if result.get("accepted") else "本轮自动处理结束")
+    score = (result.get("metadata") or {}).get("final_average_score")
+    themes = result.get("final_themes") or []
+    code_by_id = {code.get("code_id"): code for code in result.get("codes") or []}
     if (result.get("corpus_review") or {}).get("status") in ("partial", "failed"):
         st.warning(f"本次处理结束 · {status}")
     else:
-        st.success(f"本次处理完成 · {status}")
-    st.caption("自动处理结束与主题评分通过均不代表理论饱和。")
-    score_col, theme_col = st.columns(2)
+        st.caption(f"本次处理完成 · {status}")
+    theme_col, evidence_col, score_col, rounds_col = st.columns(4)
+    theme_col.metric("候选主题", len(themes))
+    evidence_col.metric("有效编码", sum(is_matched(code) for code in code_by_id.values()))
     score_col.metric("平均分", f"{score:.2f} / 5" if isinstance(score, (int, float)) else "未评分")
-    theme_col.metric("主题数", len(themes))
-    st.caption(f"评估轮次：{result['refinement_iterations']}")
-    storyline = result.get("analytic_storyline") if "analytic_storyline" in result else result.get("generation", {}).get("analytic_storyline")
-    if storyline:
-        st.write(f"本轮主题故事线（草稿，模型所写）：{storyline}")
-    if result.get("storyline_needs_review"):
-        st.info("主题已经修订，模型未提供与最终主题对应的故事线；请在整体论证中重新核对。")
-    scores = result.get("score_history") or []
-    if scores:
-        st.caption("各轮平均分：" + " → ".join(f"{item['average_score']:.2f}" for item in scores))
-    st.caption("分数衡量分析结果的呈现质量；候选机制仍需研究者结合案例证据核查。")
-
+    rounds_col.metric("评估轮次", result.get("refinement_iterations", 0))
     final_evaluation = result.get("final_evaluation") or {}
-    if final_evaluation.get("global_feedback"):
-        st.info("主题评分反馈：" + final_evaluation["global_feedback"])
-    flagged_themes = final_evaluation.get("flagged_themes", [])
+    flagged_themes = final_evaluation.get("flagged_themes") or []
     if flagged_themes:
-        st.warning(
-            f"建议人工复核 {len(flagged_themes)} 个主题：{'、'.join(flagged_themes)}"
-        )
+        st.warning(f"建议人工复核 {len(flagged_themes)} 个主题：{'、'.join(flagged_themes)}")
 
-    render_corpus_review(result, code_by_id)
-    render_matrix(result)
-    render_research_tools(result, ROOT)
-    render_review(result, ROOT)
-    st.subheader("保存结果")
-    st.download_button(
-        "保存 Word 报告（DOCX）",
-        data=build_result_docx(result, reflexivity_from_state()),
-        file_name=f"{result['session_name']}.docx",
-        mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        use_container_width=True,
-    )
-    st.download_button(
-        "保存完整数据（JSON）",
-        data=json.dumps(result, ensure_ascii=False, indent=2).encode("utf-8"),
-        file_name=f"{result['session_name']}.json",
-        mime="application/json",
-        use_container_width=True,
-    )
+    overview, findings, review, exports = st.tabs(["报告总览", "主题与证据", "研究复核", "导出与记录"])
+    with overview:
+        storyline = result.get("analytic_storyline") if "analytic_storyline" in result else (result.get("generation") or {}).get("analytic_storyline")
+        summary, context = st.columns([2.2, 1], gap="large")
+        with summary:
+            st.markdown('<div class="tl-section-heading"><span>SUMMARY</span><h2>本次分析的主要发现</h2></div>', unsafe_allow_html=True)
+            if storyline:
+                narrative(storyline, "主题故事线")
+            else:
+                st.write("本次结果未保存整体故事线。请先阅读下方主题摘要，再结合原文形成整体解释。")
+        with context:
+            review_brief(result)
+        if result.get("storyline_needs_review"):
+            st.info("主题已经修订，模型未提供与最终主题对应的故事线；请在整体论证中重新核对。")
+        question = (result.get("configuration") or {}).get("research_question")
+        if question:
+            st.caption(f"研究问题 · {question}")
+        st.markdown('<div class="tl-section-heading"><span>FINDINGS</span><h2>主题概览</h2></div>', unsafe_allow_html=True)
+        st.caption("进入「主题与证据」核对原话、补充诠释。")
+        theme_outline(themes)
+        with st.expander("评分反馈与分析边界"):
+            if final_evaluation.get("global_feedback"):
+                st.write(final_evaluation["global_feedback"])
+            scores = result.get("score_history") or []
+            if scores:
+                st.caption("各轮平均分：" + " → ".join(f"{item['average_score']:.2f}" for item in scores))
+            st.caption("分数衡量分析结果的呈现质量；候选机制仍需研究者结合案例证据核查。")
+            st.caption("自动处理结束与主题评分通过均不代表理论饱和。")
+    with findings:
+        st.header("主题与证据")
+        st.caption("引文只展示已匹配的原文；支持证据、反例与研究者诠释分别保留。")
+        theme_outline(themes, navigation=True)
+        render_theme_details(result, themes, code_by_id)
+    with review:
+        st.header("研究复核")
+        st.caption("在这里比较材料、记录分析决定与复核解释。保存这些记录不会调用模型。")
+        render_corpus_review(result, code_by_id)
+        render_matrix(result)
+        render_research_tools(result, ROOT)
+        render_review(result, ROOT)
+        render_reflexivity()
+        render_review_plan(result)
+    with exports:
+        render_result_exports(result)
+        render_codebook(result)
+
+
+def render_result_exports(result: dict) -> None:
+    st.header("保存结果")
+    st.caption("Word 用于阅读与写作；完整 JSON 保留原文、证据和研究记录，可再次打开编辑。")
+    word_col, json_col = st.columns(2)
+    with word_col:
+        st.download_button(
+            "保存 Word 报告（DOCX）",
+            data=build_result_docx(result, reflexivity_from_state()),
+            file_name=f"{result['session_name']}.docx",
+            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            use_container_width=True,
+        )
+    with json_col:
+        st.download_button(
+            "保存完整数据（JSON）",
+            data=json.dumps(result, ensure_ascii=False, indent=2).encode("utf-8"),
+            file_name=f"{result['session_name']}.json",
+            mime="application/json",
+            use_container_width=True,
+        )
     if st.button("清除服务内结果", key="clear_analysis_result", use_container_width=True):
         JOB_REGISTRY.clear_completed()
+        st.session_state.get("library_reports", {}).pop(result["session_name"], None)
         st.session_state.pop("analysis_result", None)
         st.session_state.pop("analysis_job", None)
         st.rerun()
@@ -443,6 +487,9 @@ def render_result(result: dict) -> None:
     else:
         st.caption("结果仅保存在当前服务进程内；服务重启后无法恢复，可按需下载。")
 
+
+
+def render_review_plan(result: dict) -> None:
     plan_groups = (result.get("next_data_plan") or {}).get("groups") or {}
     if any(plan_groups.values()):
         st.subheader("当前材料复核")
@@ -465,20 +512,29 @@ def render_result(result: dict) -> None:
                 if memo.get("contradicting_code_ids"):
                     st.write(f"反证编码：{', '.join(map(str, memo['contradicting_code_ids']))}")
 
+
+
+def render_theme_details(result: dict, themes: list, code_by_id: dict) -> None:
     if not themes:
         st.info("本次分析没有生成主题。请检查输入文本和模型返回内容。")
         return
 
     for index, theme in enumerate(themes, 1):
+        st.markdown(f'<div id="theme-{index}" class="tl-theme-anchor"></div>', unsafe_allow_html=True)
         with st.container(border=True):
-            st.subheader(f"{index:02d} · {theme['name']}")
-            st.caption(THEME_KIND_LABELS.get(theme.get("kind"), "待分类"))
+            theme_heading(index, theme)
+            theme_badges(theme, code_by_id)
             st.write(theme["description"])
             if theme.get("rationale"):
-                st.write(f"备忘录：{theme['rationale']}")
+                with st.expander("为什么归为这个主题"):
+                    st.write(theme["rationale"])
             code_ids = theme.get("code_ids") or []
             counter_ids = set(theme.get("counterexample_code_ids") or [])
             evidence_ids = list(dict.fromkeys([*code_ids, *sorted(counter_ids)]))
+            lead_code = next((code_by_id[code_id] for code_id in code_ids
+                              if code_id not in counter_ids and is_matched(code_by_id.get(code_id, {}))), None)
+            if lead_code:
+                evidence_quote(lead_code)
             if evidence_ids and code_by_id:
                 with st.expander(f"查看证据与编码 · {len(evidence_ids)} 条"):
                     for code_id in evidence_ids:
@@ -507,24 +563,36 @@ def render_result(result: dict) -> None:
                         continue
                     st.write(f"[{code_id}] {code.get('name') or code.get('description')}")
                     if code.get("excerpt"):
-                        st.write(f"原话：{code['excerpt']}")
-            for question in theme.get("open_questions", []):
-                st.write(f"待核查：{material_review_text(question)}")
-            note_key = f"theme_interpretation_{theme['theme_id']}"
-            st.text_area(
-                "诠释（由你写，不发送给模型）",
-                value=interpretations_by_theme(result).get(theme["theme_id"], ""),
-                key=note_key,
-                height=80,
-                placeholder="所以这一模式意味着什么？",
-            )
-            if st.button("保存本主题诠释", key=f"theme_note_save_{theme['theme_id']}"):
-                annotations = result.get("researcher_annotations") or {}
-                notes = [note for note in annotations.get("theme_notes") or [] if note["theme_id"] != theme["theme_id"]]
-                notes.append({"theme_id": theme["theme_id"], "text": st.session_state[note_key]})
-                save_annotations_ui(result, ROOT, {**annotations, "theme_notes": notes})
-            st.caption("点击保存后，诠释进入完整 JSON、文本和 Word 报告；修改已复核的记录后，复核状态会回到待复核。")
+                        if is_matched(code):
+                            evidence_quote(code, "反例引证")
+                        else:
+                            st.caption("这条反例尚未匹配原文，请在研究复核中核对。")
+            if theme.get("open_questions"):
+                with st.expander(f"待核查问题 · {len(theme['open_questions'])} 项"):
+                    for question in theme["open_questions"]:
+                        st.write(f"• {material_review_text(question)}")
+            saved_note = interpretations_by_theme(result).get(theme["theme_id"], "")
+            if saved_note:
+                narrative(saved_note, "研究者诠释", "已保存 · 不发送给模型")
+            with st.expander("编辑研究者诠释" if saved_note else "添加研究者诠释"):
+                note_key = f"theme_interpretation_{theme['theme_id']}"
+                st.text_area(
+                    "诠释（由你写，不发送给模型）",
+                    value=interpretations_by_theme(result).get(theme["theme_id"], ""),
+                    key=note_key,
+                    height=80,
+                    placeholder="所以这一模式意味着什么？",
+                )
+                if st.button("保存本主题诠释", key=f"theme_note_save_{theme['theme_id']}"):
+                    annotations = result.get("researcher_annotations") or {}
+                    notes = [note for note in annotations.get("theme_notes") or [] if note["theme_id"] != theme["theme_id"]]
+                    notes.append({"theme_id": theme["theme_id"], "text": st.session_state[note_key]})
+                    save_annotations_ui(result, ROOT, {**annotations, "theme_notes": notes})
+                st.caption("点击保存后，诠释进入完整 JSON、文本和 Word 报告；修改已复核的记录后，复核状态会回到待复核。")
 
+
+
+def render_codebook(result: dict) -> None:
     canonical_codes = [
         code for code in result.get("codes") or []
         if code.get("merged_into") is None and is_matched(code)
@@ -597,26 +665,88 @@ def render_methodology_references() -> None:
         )
 
 
-def main() -> None:
-    st.set_page_config(page_title="Threadline · 访谈质性分析", page_icon="📝", layout="wide")
+def remember_current_report() -> None:
+    result = st.session_state.get("analysis_result")
+    if result is not None:
+        st.session_state.setdefault("library_reports", {})[result["session_name"]] = result
+
+
+def new_analysis() -> None:
+    remember_current_report()
+    JOB_REGISTRY.clear_completed()
+    st.session_state.pop("analysis_job", None)
+    st.session_state.pop("analysis_result", None)
+    st.session_state["transcript_text"] = ""
+    st.session_state["case_id"] = ""
+    st.session_state.pop("transcript_file", None)
+    reset_result_widgets()
+
+
+def open_library_report(session_name: str, path: Path | None) -> None:
+    remember_current_report()
+    try:
+        result = st.session_state.get("library_reports", {}).get(session_name)
+        if result is None:
+            result = load_library_report(path)
+    except (OSError, ValueError, TypeError, KeyError, AttributeError):
+        st.session_state["library_notice"] = "无法打开这份报告，请检查文件格式与原文校验。"
+        return
+    JOB_REGISTRY.clear_completed()
+    st.session_state.pop("analysis_job", None)
+    reset_result_widgets()
+    st.session_state["analysis_result"] = result
+    remember_current_report()
+
+
+def render_report_navigation(running: bool) -> None:
     st.markdown(
-        """
-        <style>
-        .block-container { max-width: 960px; padding-top: 2rem; padding-bottom: 4rem; }
-        @media (max-width: 640px) {
-            .block-container { padding-top: 1rem; }
-        }
-        </style>
-        """,
-        unsafe_allow_html=True,
+        '<div class="tl-library-brand"><span class="tl-wordmark">Threadline<span>.</span></span>'
+        '<span class="tl-library-caption">质性研究工作台</span></div>', unsafe_allow_html=True,
     )
+    st.button("新建分析", icon=":material/add:", key="new_analysis", type="primary",
+              use_container_width=True, disabled=running, on_click=new_analysis)
+    st.divider()
+    st.markdown('<div class="tl-library-heading">分析报告</div>', unsafe_allow_html=True)
+    entries = {item["session_name"]: item for item in local_reports(ROOT / "outputs")}
+    for name, result in st.session_state.get("library_reports", {}).items():
+        entries[name] = {"session_name": name, "label": report_label(result),
+                         "timestamp": str(result.get("timestamp", "")), "path": None}
+    current = st.session_state.get("analysis_result", {}).get("session_name")
+    with st.container(key="library_list"):
+        if not entries:
+            st.caption("还没有报告。完成首次分析后，会在这里显示。")
+        for index, entry in enumerate(sorted(entries.values(), key=lambda item: item["timestamp"], reverse=True)):
+            st.button(entry["label"], icon=":material/article:", key=f"library_item_{index}",
+                      type="secondary" if entry["session_name"] == current else "tertiary",
+                      use_container_width=True, disabled=running,
+                      help=entry["session_name"], on_click=open_library_report,
+                      args=(entry["session_name"], entry["path"]))
+    notice = st.session_state.pop("library_notice", None)
+    if notice:
+        st.error(notice)
+    st.caption("本地已保存的报告及本次会话报告。")
+    st.divider()
+
+
+def main() -> None:
+    st.set_page_config(page_title="Threadline · 访谈质性分析", page_icon="◦", layout="wide")
+    load_styles()
     job = st.session_state.get("analysis_job") or JOB_REGISTRY.current()
     if job is not None:
         st.session_state["analysis_job"] = job
     running = job is not None and not job.snapshot().done
+    if job is not None and job.snapshot().done and job.snapshot().result is not None:
+        st.session_state["analysis_result"] = job.snapshot().result
+    remember_current_report()
 
     with st.sidebar:
-        st.header("分析设置")
+        render_report_navigation(running)
+        settings = st.popover("分析设置", icon=":material/tune:", use_container_width=True)
+    with settings:
+        st.markdown('<div class="tl-settings-heading">分析设置</div>', unsafe_allow_html=True)
+        st.caption("调整后自动应用于下一次分析。")
+        connection_settings, analysis_settings = st.tabs(["模型连接", "分析参数"])
+    with connection_settings:
         st.subheader("模型连接")
         providers = {
             "DeepSeek": ("DEEPSEEK_API_KEY", "DeepSeek-V4.1-Flash"),
@@ -761,7 +891,7 @@ def main() -> None:
                 else:
                     st.success("连接成功，密钥、地址和模型可用。")
 
-        st.divider()
+    with analysis_settings:
         st.subheader("切块与评估")
         profile_label = st.selectbox(
             "研究配置", ["通用主题分析", "企业能力与证据链"],
@@ -829,170 +959,181 @@ def main() -> None:
                 help="评估判断的置信度低于该值时，会请求详细反馈并在结果中标记为建议人工复核。",
             )
 
-    st.caption("Threadline · 质性研究工作台")
-    st.title("访谈质性分析")
-    st.write("提取有原文依据的编码，识别共享意义模式、反例和待核查问题；可按研究问题聚焦。")
+    with st.sidebar:
+        st.caption(f"当前模型 · {provider}")
+        st.caption(model)
 
-    st.divider()
-    st.header("1. 输入访谈材料")
-    case_id = st.text_input(
-        "匿名案例编号（选填）", key="case_id", max_chars=80, disabled=running,
-        help="例如 Case-01。编号会进入报告，不会作为文件夹名称。",
+    has_result = "analysis_result" in st.session_state or (
+        job is not None and job.snapshot().done and job.snapshot().result is not None
     )
-    research_options, research_error = research_inputs(st.session_state.get("analysis_result"), running)
-    source = st.radio(
-        "输入方式", ["粘贴文本", "上传文件"], horizontal=True,
-        disabled=running,
-    )
-    pasted_text = ""
-    uploaded_file = None
-    transcript = ""
-    input_error = None
-    if source == "粘贴文本":
-        pasted_text = st.text_area(
-            "逐字稿内容",
-            height=320,
-            placeholder="访谈者：请描述一次相关经历。\n受访者：当时我……",
-            key="transcript_text",
-            disabled=running,
-        )
+    workspace_header(compact=has_result)
+    if has_result:
+        report_panel, input_panel = st.tabs(["分析报告", "准备材料"])
     else:
-        uploaded_file = st.file_uploader(
-            "选择 UTF-8 TXT 或 Word DOCX 文件", type=["txt", "docx"],
+        input_panel, report_panel = st.tabs(["准备材料", "分析报告"])
+
+    with input_panel:
+        st.header("1. 输入访谈材料")
+        case_id = st.text_input(
+            "匿名案例编号（选填）", key="case_id", max_chars=80, disabled=running,
+            help="例如 Case-01。编号会进入报告，不会作为文件夹名称。",
+        )
+        research_options, research_error = research_inputs(st.session_state.get("analysis_result"), running)
+        source = st.radio(
+            "输入方式", ["粘贴文本", "上传文件"], horizontal=True,
             disabled=running,
         )
-
-    try:
-        transcript = read_transcript(source, pasted_text, uploaded_file)
-    except UnicodeDecodeError:
-        input_error = "文件无法按 UTF-8 读取，请将逐字稿另存为 UTF-8 文本后重试。"
-    except ValueError as exc:
-        input_error = str(exc)
-
-    if input_error:
-        st.error(input_error)
-    elif transcript:
-        preview, _ = plan_chunks(
-            transcript,
-            strategy=chunk_strategy,
-            manual_chunk_size=int(chunk_size) if chunk_size is not None else None,
-        )
-        size_unit = "字词" if preview.measurement_unit == "text_units" else "估算模型文本单位"
-        with st.container(border=True):
-            st.subheader("切块预估")
-            st.write(f"已读取 **{preview.total_characters:,} 个字符** · 预计 **{preview.num_chunks} 个片段**")
-            st.caption(
-                f"每片目标约 {preview.target_size} {size_unit}，上限 {preview.hard_limit}；"
-                "优先在问答、说话人轮次、段落或句末切分。"
+        pasted_text = ""
+        uploaded_file = None
+        transcript = ""
+        input_error = None
+        if source == "粘贴文本":
+            pasted_text = st.text_area(
+                "逐字稿内容",
+                height=320,
+                placeholder="访谈者：请描述一次相关经历。\n受访者：当时我……",
+                key="transcript_text",
+                disabled=running,
+            )
+        else:
+            uploaded_file = st.file_uploader(
+                "选择 UTF-8 TXT 或 Word DOCX 文件", type=["txt", "docx"],
+                disabled=running, key="transcript_file",
             )
 
-    st.header("2. 运行分析")
-    st.caption("请先对访谈材料去标识化。开始后，文本会发送到所选模型服务；模型生成的判断需要研究者核对。")
-    if st.button("开始分析", type="primary", use_container_width=True, key="run_analysis", disabled=running):
-        connection_error = connection_input_error(
-            api_key, model, base_url, endpoint, decision_mode, jev_api_key, env_name,
-        )
+        try:
+            transcript = read_transcript(source, pasted_text, uploaded_file)
+        except UnicodeDecodeError:
+            input_error = "文件无法按 UTF-8 读取，请将逐字稿另存为 UTF-8 文本后重试。"
+        except ValueError as exc:
+            input_error = str(exc)
+
         if input_error:
             st.error(input_error)
-        elif research_error:
-            st.error(research_error)
-        elif not transcript:
-            st.error("请先粘贴访谈文本或上传 TXT/DOCX 文件。")
-        elif connection_error:
-            st.error(connection_error)
-        else:
-            decision_provider = None
-            if decision_mode == JEV_DECISION_MODE:
-                decision_provider = JevDecisionClient(
-                    api_key=jev_api_key,
-                    base_url=os.getenv("JEV_BASE_URL") or None,
-                    model=os.getenv("JEV_MODEL") or None,
+        elif transcript:
+            preview, _ = plan_chunks(
+                transcript,
+                strategy=chunk_strategy,
+                manual_chunk_size=int(chunk_size) if chunk_size is not None else None,
+            )
+            size_unit = "字词" if preview.measurement_unit == "text_units" else "估算模型文本单位"
+            with st.container(border=True):
+                st.subheader("切块预估")
+                st.write(f"已读取 **{preview.total_characters:,} 个字符** · 预计 **{preview.num_chunks} 个片段**")
+                st.caption(
+                    f"每片目标约 {preview.target_size} {size_unit}，上限 {preview.hard_limit}；"
+                    "优先在问答、说话人轮次、段落或句末切分。"
                 )
 
-            def run(checkpoint):
-                run_options = {key: value for key, value in research_options.items() if key != "analysis_mode"}
-                framework = TAMAFramework(
-                    api_key=api_key,
-                    model=api_model_name(provider, model),
-                    base_url=endpoint,
-                    chunk_size=int(chunk_size) if chunk_size is not None else None,
-                    chunk_strategy=chunk_strategy,
-                    max_workers=int(max_workers),
-                    max_iterations=int(max_iterations),
-                    corpus_review=corpus_review,
-                    decision_provider=decision_provider,
-                    confidence_threshold=float(confidence_threshold),
-                    output_dir=str(ROOT / "outputs"),
-                    profile=profile,
-                    research_question=research_question,
-                    focus_areas=[item.strip() for item in focus_text.replace("，", ",").split(",") if item.strip()] or None,
-                    **({"analysis_mode": research_options["analysis_mode"]} if "analysis_mode" in research_options else {}),
-                )
-                return framework.run_analysis(
-                    transcript=transcript,
-                    save_intermediate=save_intermediate,
-                    save_final=save_final,
-                    before_model_call=checkpoint,
-                    **({"case_id": case_id} if case_id.strip() else {}),
-                    **run_options,
-                )
-
-            reset_result_widgets()
-            st.session_state.pop("_result_widget_scope", None)
-            st.session_state.pop("analysis_result", None)
-            try:
-                job = JOB_REGISTRY.start(run)
-            except RuntimeError:
-                st.error("已有分析正在运行，请接回或取消该任务。")
+        st.header("2. 运行分析")
+        st.caption("请先对访谈材料去标识化。开始后，文本会发送到所选模型服务；模型生成的判断需要研究者核对。")
+        if st.button("开始分析", type="primary", use_container_width=True, key="run_analysis", disabled=running):
+            connection_error = connection_input_error(
+                api_key, model, base_url, endpoint, decision_mode, jev_api_key, env_name,
+            )
+            if input_error:
+                st.error(input_error)
+            elif research_error:
+                st.error(research_error)
+            elif not transcript:
+                st.error("请先粘贴访谈文本或上传 TXT/DOCX 文件。")
+            elif connection_error:
+                st.error(connection_error)
             else:
-                st.session_state["analysis_job"] = job
-                st.rerun()
+                decision_provider = None
+                if decision_mode == JEV_DECISION_MODE:
+                    decision_provider = JevDecisionClient(
+                        api_key=jev_api_key,
+                        base_url=os.getenv("JEV_BASE_URL") or None,
+                        model=os.getenv("JEV_MODEL") or None,
+                    )
 
-    if job is not None and job.snapshot().done:
-        snapshot = job.snapshot()
-        if snapshot.result is not None:
-            st.session_state["analysis_result"] = snapshot.result
-        elif snapshot.cancelled:
-            st.info("分析已取消；已发出的模型请求可能已计费。")
-        else:
-            st.error("分析未完成。请检查密钥、接口地址、网络和模型返回内容。")
-            st.caption(f"错误类型：{snapshot.error_type}")
-            st.caption(f"失败阶段：{snapshot.stage}")
-            if snapshot.error_location:
-                st.caption(f"错误位置：{snapshot.error_location}")
-            if snapshot.http_status:
-                st.caption(f"HTTP 状态码：{snapshot.http_status}")
-            if snapshot.error_type == "TypeError":
-                st.info("程序调用发生类型错误。若刚更新过代码，请重启本地服务后重试。")
-    elif running:
-        render_active_job()
+                def run(checkpoint):
+                    run_options = {key: value for key, value in research_options.items() if key != "analysis_mode"}
+                    framework = TAMAFramework(
+                        api_key=api_key,
+                        model=api_model_name(provider, model),
+                        base_url=endpoint,
+                        chunk_size=int(chunk_size) if chunk_size is not None else None,
+                        chunk_strategy=chunk_strategy,
+                        max_workers=int(max_workers),
+                        max_iterations=int(max_iterations),
+                        corpus_review=corpus_review,
+                        decision_provider=decision_provider,
+                        confidence_threshold=float(confidence_threshold),
+                        output_dir=str(ROOT / "outputs"),
+                        profile=profile,
+                        research_question=research_question,
+                        focus_areas=[item.strip() for item in focus_text.replace("，", ",").split(",") if item.strip()] or None,
+                        **({"analysis_mode": research_options["analysis_mode"]} if "analysis_mode" in research_options else {}),
+                    )
+                    return framework.run_analysis(
+                        transcript=transcript,
+                        save_intermediate=save_intermediate,
+                        save_final=save_final,
+                        before_model_call=checkpoint,
+                        **({"case_id": case_id} if case_id.strip() else {}),
+                        **run_options,
+                    )
 
-    with st.expander("查看已保存报告（JSON）"):
-        st.caption("恢复报告中的原文、研究者诠释和复核记录，仅供查看和编辑；开始新分析仍只处理新提交的文稿。")
-        saved_report = st.file_uploader("选择已保存的完整结果", type=["json"], key="saved_report_file", disabled=running)
-        if st.button("打开保存的报告", key="open_saved_report", disabled=running):
-            try:
-                if saved_report is None:
-                    raise ValueError("未选择报告")
-                restored = restore_report(json.loads(saved_report.getvalue().decode("utf-8-sig")))
-            except (ValueError, TypeError, KeyError, AttributeError):
-                st.error("无法打开报告，请选择结构完整、原文校验一致的 Threadline 结果 JSON。")
-            else:
-                JOB_REGISTRY.clear_completed()
-                st.session_state.pop("analysis_job", None)
-                st.session_state["analysis_result"] = restored
                 reset_result_widgets()
-                st.rerun()
+                st.session_state.pop("_result_widget_scope", None)
+                st.session_state.pop("analysis_result", None)
+                try:
+                    job = JOB_REGISTRY.start(run)
+                except RuntimeError:
+                    st.error("已有分析正在运行，请接回或取消该任务。")
+                else:
+                    st.session_state["analysis_job"] = job
+                    st.rerun()
 
-    render_reflexivity()
-    st.divider()
-    if "analysis_result" in st.session_state:
-        render_result(st.session_state["analysis_result"])
-    else:
-        st.header("3. 分析结果")
-        with st.container(border=True):
-            st.subheader("尚无分析结果")
-            st.write("完成分析后，这里会显示主题、关联编码和评估结果，并提供 Word 报告与 JSON 数据下载。")
+        if job is not None and job.snapshot().done:
+            snapshot = job.snapshot()
+            if snapshot.result is not None:
+                st.session_state["analysis_result"] = snapshot.result
+            elif snapshot.cancelled:
+                st.info("分析已取消；已发出的模型请求可能已计费。")
+            else:
+                st.error("分析未完成。请检查密钥、接口地址、网络和模型返回内容。")
+                st.caption(f"错误类型：{snapshot.error_type}")
+                st.caption(f"失败阶段：{snapshot.stage}")
+                if snapshot.error_location:
+                    st.caption(f"错误位置：{snapshot.error_location}")
+                if snapshot.http_status:
+                    st.caption(f"HTTP 状态码：{snapshot.http_status}")
+                if snapshot.error_type == "TypeError":
+                    st.info("程序调用发生类型错误。若刚更新过代码，请重启本地服务后重试。")
+        elif running:
+            render_active_job()
+
+        with st.expander("查看已保存报告（JSON）"):
+            st.caption("恢复报告中的原文、研究者诠释和复核记录，仅供查看和编辑；开始新分析仍只处理新提交的文稿。")
+            saved_report = st.file_uploader("选择已保存的完整结果", type=["json"], key="saved_report_file", disabled=running)
+            if st.button("打开保存的报告", key="open_saved_report", disabled=running):
+                try:
+                    if saved_report is None:
+                        raise ValueError("未选择报告")
+                    restored = restore_report(json.loads(saved_report.getvalue().decode("utf-8-sig")))
+                except (ValueError, TypeError, KeyError, AttributeError):
+                    st.error("无法打开报告，请选择结构完整、原文校验一致的 Threadline 结果 JSON。")
+                else:
+                    JOB_REGISTRY.clear_completed()
+                    st.session_state.pop("analysis_job", None)
+                    st.session_state["analysis_result"] = restored
+                    reset_result_widgets()
+                    st.rerun()
+
+        if not has_result:
+            render_reflexivity()
+
+    with report_panel:
+        if "analysis_result" in st.session_state:
+            render_result(st.session_state["analysis_result"])
+        else:
+            st.header("3. 分析结果")
+            with st.container(border=True):
+                st.subheader("尚无分析结果")
+                st.write("完成分析后，这里会显示主题、关联编码和评估结果，并提供 Word 报告与 JSON 数据下载。")
 
     render_methodology_references()
 

@@ -73,7 +73,7 @@ class ResearchEditorTests(unittest.TestCase):
             app.run()
             self.assertEqual(app.selectbox(key="category_C0_status").value, "待发展")
 
-    def test_decision_is_saved_locally_and_submission_requires_a_separate_choice(self):
+    def test_decision_is_saved_locally_without_model_submission(self):
         with patch.dict(os.environ, {}, clear=True):
             app = AppTest.from_file(str(ROOT / "streamlit_app.py"))
             app.session_state["analysis_result"] = study_result()
@@ -147,14 +147,27 @@ class ResearchEditorTests(unittest.TestCase):
             app = AppTest.from_file(str(ROOT / "streamlit_app.py"))
             app.session_state["analysis_result"] = study_result()
             app.run()
+            self.assertEqual(len(app.get("graphviz_chart")), 0)
             app.text_area(key="relation_description").set_value("两种行动在不同条件下关联")
-            app.multiselect(key="relation_codes").set_value([0, 1])
             app.text_input(key="relation_researcher").set_value("R1")
+            app.button(key="FormSubmitter:category_relationship_form-保存类属关系").click().run()
+            self.assertFalse(app.exception)
+            self.assertTrue(app.error)
+            self.assertEqual(app.session_state["analysis_result"]["research_workspace"]["argument"]["relationships"], [])
+            self.assertEqual(len(app.get("graphviz_chart")), 0)
+
+            app.multiselect(key="relation_codes").set_value([0, 1])
             app.button(key="FormSubmitter:category_relationship_form-保存类属关系").click().run()
             self.assertFalse(app.exception)
             relations = app.session_state["analysis_result"]["research_workspace"]["argument"]["relationships"]
             self.assertEqual(relations[0]["code_ids"], [0, 1])
             self.assertEqual(relations[0]["researcher"], "R1")
+            graphs = app.get("graphviz_chart")
+            self.assertEqual(len(graphs), 1)
+            spec = graphs[0].proto.spec
+            self.assertRegex(spec, r'"?C0"?\s*->\s*"?C1"?')
+            for label in ("资料保留", "资料分享", relations[0]["description"]):
+                self.assertIn(label, spec)
             self.assertIsNone(JOB_REGISTRY.current())
 
     def test_full_text_review_defaults_on_and_can_be_disabled(self):

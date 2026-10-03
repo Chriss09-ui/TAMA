@@ -8,7 +8,7 @@ from unittest.mock import Mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from agents.generation_agent import Chunk, Code, GenerationAgent
+from agents.generation_agent import Chunk, GenerationAgent
 from evidence_fixtures import matched_code
 from code_mapping import apply_related_codes, build_code_map, render_code_landscape
 from code_memos import code_memos_for_model, render_code_memos_markdown
@@ -78,36 +78,21 @@ class ScaleAndMemoTests(unittest.TestCase):
         self.assertNotIn("我自己当过带教", prompt)
         self.assertNotIn("human_note", json.dumps(memos_for_model(rewritten), ensure_ascii=False))
 
-    def test_reflexivity_file_round_trip(self):
+    def test_reflexivity_round_trip_preserves_plain_text_and_markdown(self):
         from tempfile import TemporaryDirectory
 
-        with TemporaryDirectory() as temp:
-            path = Path(temp) / "reflexivity.md"
-            save_reflexivity(path, {
-                "position": "我当过实习带教。",
-                "surprise": "表格没人看。",
-                "interest": "",
-                "trouble": "我想替作者下结论。",
-                "noticed": "",
-                "why_noticed": "",
-                "interpretation": "",
-                "how_know": "",
-            })
-            loaded = load_reflexivity(path)
-        self.assertEqual(loaded["position"], "我当过实习带教。")
-        self.assertEqual(loaded["trouble"], "我想替作者下结论。")
-        self.assertEqual(loaded["interest"], "")
-
-    def test_reflexivity_round_trip_preserves_headings_and_code_fences(self):
-        from tempfile import TemporaryDirectory
-
+        plain = {"position": "我当过实习带教。", "surprise": "表格没人看。", "interest": "",
+                 "trouble": "我想替作者下结论。", "noticed": "", "why_noticed": "",
+                 "interpretation": "", "how_know": ""}
         note = "第一段\n\n## 自拟标题\n第二段\n## 什么让我感兴趣？\n```text\n代码示例\n```\n最后一段"
-        with TemporaryDirectory() as temp:
-            path = Path(temp) / "reflexivity.md"
-            save_reflexivity(path, {"surprise": note, "interest": "独立记录"})
-            loaded = load_reflexivity(path)
-        self.assertEqual(loaded["surprise"], note)
-        self.assertEqual(loaded["interest"], "独立记录")
+        markdown = {"surprise": note, "interest": "独立记录"}
+        expected_markdown = {key: "" for key in plain}
+        expected_markdown.update(markdown)
+        for label, data, expected in (("plain", plain, plain), ("markdown", markdown, expected_markdown)):
+            with self.subTest(format=label), TemporaryDirectory() as temp:
+                path = Path(temp) / "reflexivity.md"
+                save_reflexivity(path, data)
+                self.assertEqual(load_reflexivity(path), expected)
 
     def test_legacy_reflexivity_preserves_custom_headings(self):
         from tempfile import TemporaryDirectory
@@ -309,7 +294,7 @@ class CodingCycleTests(unittest.TestCase):
 
 
 class ReportAndPlanTests(unittest.TestCase):
-    def test_open_questions_are_grouped_for_the_next_round(self):
+    def test_open_questions_are_grouped_for_current_material_review(self):
         plan = build_next_data_plan(
             codes=[{"code_id": 1, "open_question": "去问产品经理后来有没有人用"}],
             themes=[{
@@ -365,27 +350,29 @@ class ReportAndPlanTests(unittest.TestCase):
         self.assertIn("所以……", lines)
         self.assertIn("研究者立场", lines)
 
-    def test_long_quotes_do_not_fill_the_theme_section(self):
-        excerpts = [f"原话{index}" + ("很长" * 300) for index in range(6)]
-        result = {
-            "session_name": "long",
-            "accepted": True,
-            "metadata": {"final_average_score": 4},
-            "final_themes": [{
-                "name": "一个模式",
-                "description": "短描述",
-                "code_ids": list(range(6)),
-                "counterexample_code_ids": [],
-            }],
-            "codes": [
-                {"code_id": index, "description": f"编码{index}", "excerpt": excerpt}
-                for index, excerpt in enumerate(excerpts)
-            ],
-        }
-        result["codes"] = [matched_code(**code).model_dump() for code in result["codes"]]
-        packs = assign_theme_quotes(result)
-        self.assertLess(len(packs[0]["supports"]), 6)
-        self.assertLessEqual(len(packs[0]["supports"]), 4)
+    def quote_result(self, excerpts, description="短描述", counters=()):
+        return {"final_themes": [{"name": "一个模式", "description": description,
+                                 "code_ids": list(range(len(excerpts))), "counterexample_code_ids": list(counters)}],
+                "codes": [matched_code(code_id=index, description=f"编码{index}", excerpt=excerpt).model_dump()
+                          for index, excerpt in enumerate(excerpts)]}
+
+    def test_quote_budget_limits_long_excerpts_and_responds_to_analysis_length(self):
+        short = [f"原话{index}" for index in range(6)]
+        long = [excerpt + "很长" * 300 for excerpt in short]
+        short_quotes = assign_theme_quotes(self.quote_result(short))[0]["supports"]
+        long_quotes = assign_theme_quotes(self.quote_result(long))[0]["supports"]
+        explained_quotes = assign_theme_quotes(self.quote_result(long, description="分析" * 1000))[0]["supports"]
+
+        self.assertGreater(len(long_quotes), 0)
+        self.assertLess(len(long_quotes), len(short_quotes))
+        self.assertGreater(len(explained_quotes), len(long_quotes))
+        self.assertTrue(all(quote["excerpt"] in long for quote in long_quotes))
+
+    def test_quote_selection_caps_supports_and_counterexamples_per_theme(self):
+        excerpts = [f"原话{index}" for index in range(12)]
+        pack = assign_theme_quotes(self.quote_result(excerpts, counters=range(6, 12)))[0]
+        self.assertEqual(len(pack["supports"]), 4)
+        self.assertEqual(len(pack["counters"]), 4)
 
 
 if __name__ == "__main__":

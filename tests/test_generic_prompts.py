@@ -9,7 +9,7 @@ from unittest.mock import Mock, patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from agents.evaluation_agent import EvaluationAgent
-from agents.generation_agent import Chunk, Code, GenerationAgent
+from agents.generation_agent import Chunk, GenerationAgent
 from evidence_fixtures import matched_code
 from agents.refinement_agent import RefinementAgent
 from decisions.base import DecisionAnswer
@@ -22,13 +22,14 @@ def fake_response(data):
 
 class GenericPromptTests(unittest.TestCase):
     def assert_generic_prompt(self, client):
-        messages = client.chat.completions.create.call_args.kwargs["messages"]
+        options = client.chat.completions.create.call_args.kwargs
+        messages = options["messages"]
         prompt = "\n".join(message["content"] for message in messages).lower()
         for domain_term in ("clinical", "aao", "cardiac", "parent", "patient"):
             self.assertNotIn(domain_term, prompt)
-        self.assertIn("质性研究者", messages[0]["content"])
+        self.assertEqual([message["role"] for message in messages], ["system", "user"])
         self.assertIn("相同的语言", prompt)
-        self.assertIn("只返回符合以下结构的 json 对象", prompt)
+        self.assertEqual(options["response_format"], {"type": "json_object"})
 
     def test_generation_prompts_are_grounded_and_domain_neutral(self):
         agent = GenerationAgent(api_key="test")

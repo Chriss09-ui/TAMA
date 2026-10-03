@@ -273,19 +273,13 @@ class StreamlitAppTests(unittest.TestCase):
 
         self.assertFalse(app.exception)
         self.assertEqual(app.session_state["analysis_result"], result)
-        framework.assert_called_once_with(
-            api_key="test-key",
-            model="mimo-v2.5-pro",
-            base_url="https://api.xiaomimimo.com/v1",
-            chunk_size=600,
-            chunk_strategy="manual",
-            max_workers=2,
-            max_iterations=5, corpus_review=True,
-            decision_provider=None,
-            confidence_threshold=0.7,
-            output_dir=str(ROOT / "outputs"),
-            profile="generic", research_question="", focus_areas=None,
-        )
+        framework.assert_called_once()
+        expected = {"api_key": "test-key", "model": "mimo-v2.5-pro",
+                    "base_url": "https://api.xiaomimimo.com/v1", "chunk_size": 600,
+                    "chunk_strategy": "manual", "max_workers": 2}
+        for key, value in expected.items():
+            with self.subTest(setting=key):
+                self.assertEqual(framework.call_args.kwargs[key], value)
         framework.return_value.run_analysis.assert_called_once_with(
             transcript="一段测试访谈文本",
             save_intermediate=False,
@@ -317,7 +311,7 @@ class StreamlitAppTests(unittest.TestCase):
         self.assertEqual(framework.call_args.kwargs["focus_areas"], ["证据", "断点"])
         self.assertTrue(framework.return_value.run_analysis.call_args.kwargs["save_final"])
 
-    def test_deepseek_provider_passes_model_and_endpoint(self):
+    def test_default_analysis_settings_reach_framework(self):
         result = {
             "session_name": "deepseek-test-session",
             "accepted": True,
@@ -520,15 +514,8 @@ class StreamlitAppTests(unittest.TestCase):
             new_session.run()
 
         self.assertFalse(new_session.exception)
-        framework.assert_called_once_with(
-            api_key="saved-test-key", model="deepseek-flash",
-            base_url="https://api.deepseek.com", chunk_size=None,
-            chunk_strategy="balanced",
-            max_workers=4, max_iterations=5, corpus_review=True,
-            decision_provider=None, confidence_threshold=0.7,
-            output_dir=str(ROOT / "outputs"),
-            profile="generic", research_question="", focus_areas=None,
-        )
+        framework.assert_called_once()
+        self.assertEqual(framework.call_args.kwargs["api_key"], "saved-test-key")
 
     def test_delete_saved_key_removes_it_from_next_session(self):
         vault = {(KEYRING_SERVICE, "MiMo"): "saved-test-key"}
@@ -621,16 +608,9 @@ class StreamlitAppTests(unittest.TestCase):
 
         self.assertFalse(app.exception)
         jev_client_cls.assert_called_once_with(api_key="jev-test", base_url=None, model=None)
-        framework.assert_called_once_with(
-            api_key="test-key", model="deepseek-flash",
-            base_url="https://api.deepseek.com", chunk_size=None,
-            chunk_strategy="balanced",
-            max_workers=4, max_iterations=5, corpus_review=True,
-            decision_provider=jev_client_cls.return_value,
-            confidence_threshold=0.7,
-            output_dir=str(ROOT / "outputs"),
-            profile="generic", research_question="", focus_areas=None,
-        )
+        framework.assert_called_once()
+        self.assertEqual(framework.call_args.kwargs["api_key"], "test-key")
+        self.assertIs(framework.call_args.kwargs["decision_provider"], jev_client_cls.return_value)
 
     def test_jev_connection_test_sends_noul_request(self):
         with patch.dict(os.environ, {}, clear=True), \

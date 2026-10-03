@@ -9,12 +9,13 @@ from analysis_records import REVIEW_LABELS, record_event, recorded_now, update_a
 from evidence import matched_codes
 from evidence_views import DIMENSIONS, build_comparison_matrix, evidence_context
 from research_ui import save_result_records
+from ui_design import evidence_quote
 
 
 def render_evidence(result, code, key):
     source = code.get("source") or {}
     st.write(f"[{code['code_id']}] {code.get('name') or code.get('description')}")
-    st.write(f"原话：{code.get('excerpt') or '没有有效摘录'}")
+    evidence_quote(code)
     st.caption(f"来源 {source.get('source_id') or '未知'} · 参与者 {source.get('participant_id') or '未知'} · "
                f"说话人 {code.get('speaker') or '未知'} · 场景 {source.get('setting') or '未知'} · "
                f"时间 {source.get('recorded_at') or '未知'} · 原文位置 {code.get('source_start')}–{code.get('source_end')}")

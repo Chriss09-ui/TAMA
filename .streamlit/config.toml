@@ -11,8 +11,8 @@ showErrorDetails = "type"
 
 [theme]
 base = "light"
-primaryColor = "#245947"
-backgroundColor = "#FAFBF8"
-secondaryBackgroundColor = "#EFF3EE"
-textColor = "#20312A"
+primaryColor = "#3559B8"
+backgroundColor = "#FFFFFF"
+secondaryBackgroundColor = "#F7F8FA"
+textColor = "#161B26"
 font = "sans serif"

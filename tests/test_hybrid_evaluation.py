@@ -1,11 +1,9 @@
 import json
-import os
 import sys
 import unittest
 from pathlib import Path
-from threading import Barrier
 from types import SimpleNamespace
-from unittest.mock import Mock, patch
+from unittest.mock import Mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -169,20 +167,6 @@ class HybridEvaluationTests(unittest.TestCase):
         self.assertEqual(result.refinement_suggestions, ["补充编码"])
         self.assertEqual(result.feedback_source, "llm")
 
-    def test_low_confidence_flags_review_and_triggers_feedback(self):
-        provider = StubDecisionProvider(decision_answers(confidence=0.5))
-        agent, stages = self.make_agent(provider)
-        agent.client.chat.completions.create.return_value = fake_response({
-            "coverage_feedback": "反馈", "actionability_feedback": "反馈",
-            "distinctiveness_feedback": "反馈", "relevance_feedback": "反馈",
-            "needs_refinement": False, "refinement_suggestions": [],
-        })
-
-        result = agent.evaluate_theme(THEME, [THEME], CODES)
-
-        self.assertEqual(stages[-1], "生成评估反馈 · 日常安排")
-        self.assertTrue(result.flagged_for_review)
-
     def test_score_rounding_is_half_up_and_raw_scores_are_kept(self):
         provider = StubDecisionProvider(decision_answers(
             coverage=3.5, actionability=2.5, distinctiveness=0.2, relevance=4.4,
@@ -341,24 +325,6 @@ class HybridEvaluationTests(unittest.TestCase):
         })
         self.assertEqual(len(body["questions"]["coverage"]["criteria"]), 5)
 
-    def test_provider_calls_run_concurrently_with_order_kept(self):
-        barrier = Barrier(3)
-        themes = [
-            {"name": f"主题 {i}", "description": "描述", "codes": [], "code_ids": [0]} for i in range(3)
-        ]
-
-        class BlockingProvider(StubDecisionProvider):
-            def ask(self, state, questions):
-                barrier.wait(timeout=5)
-                return decision_answers()
-
-        agent = EvaluationAgent(api_key="test", max_workers=3, decision_provider=BlockingProvider(None))
-
-        result = agent.evaluate_all_themes(themes, CODES)
-
-        self.assertEqual([e.theme_name for e in result.theme_evaluations],
-                         ["主题 0", "主题 1", "主题 2"])
-
     def test_empty_theme_list_has_clear_error(self):
         agent = EvaluationAgent(
             api_key="test", decision_provider=StubDecisionProvider(decision_answers()),
@@ -382,10 +348,9 @@ class HybridEvaluationTests(unittest.TestCase):
         feedback = agent._generate_global_feedback([evaluation], 4.0, True)
         self.assertIn("建议人工复核", feedback)
 
-    def test_run_records_decision_audit_fields(self):
+    def test_low_confidence_run_requests_feedback_and_records_audit_fields(self):
         provider = StubDecisionProvider(decision_answers(confidence=0.5))
-        agent = EvaluationAgent(api_key="test", decision_provider=provider)
-        agent.client = Mock()
+        agent, stages = self.make_agent(provider)
         agent.client.chat.completions.create.return_value = fake_response({
             "coverage_feedback": "反馈", "actionability_feedback": "反馈",
             "distinctiveness_feedback": "反馈", "relevance_feedback": "反馈",
@@ -394,10 +359,15 @@ class HybridEvaluationTests(unittest.TestCase):
 
         result = agent.run([THEME], CODES)
 
+        agent.client.chat.completions.create.assert_called_once()
+        self.assertEqual(stages, ["评估主题 · 日常安排", "生成评估反馈 · 日常安排"])
         self.assertEqual(result["decision_provider"], "stub")
         self.assertEqual(result["confidence_threshold"], 0.7)
         self.assertEqual(result["flagged_themes"], ["日常安排"])
         saved = result["theme_evaluations"][0]
+        self.assertEqual(saved["coverage_feedback"], "反馈")
+        self.assertEqual(saved["feedback_source"], "llm")
+        self.assertEqual(saved["score_confidences"]["coverage"], 0.5)
         self.assertEqual(saved["score_confidences"]["needs_refinement"], 0.9)
         self.assertTrue(saved["flagged_for_review"])
 
@@ -420,23 +390,6 @@ class HybridEvaluationTests(unittest.TestCase):
 def make_transport(handler):
     import httpx
     return httpx.MockTransport(handler)
-
-
-class ExampleDecisionProviderTests(unittest.TestCase):
-    def test_jev_env_key_selects_jev_client(self):
-        import example_usage
-
-        with patch.dict(os.environ, {"JEV_API_KEY": "jev-test"}, clear=True):
-            provider = example_usage.get_decision_provider()
-
-        self.assertIsInstance(provider, JevDecisionClient)
-        self.assertEqual(provider.model, "jev-latest")
-
-    def test_main_model_mode_returns_none(self):
-        import example_usage
-
-        with patch.dict(os.environ, {}, clear=True):
-            self.assertIsNone(example_usage.get_decision_provider())
 
 
 if __name__ == "__main__":
