@@ -4,12 +4,11 @@ Evaluates generated themes based on four criteria: Coverage, Actionability, Dist
 Provides feedback for refinement until affirmative answer is received.
 """
 
-from typing import List, Dict, Any, Optional
+from typing import Callable, List, Dict, Any, Optional
 from openai import OpenAI
 from pydantic import BaseModel, Field, TypeAdapter, field_validator
 import json
 import math
-from concurrent.futures import ThreadPoolExecutor
 
 from decisions.base import DecisionProvider, DecisionQuestion
 from decisions.llm_client import LLMDecisionClient
@@ -28,6 +27,8 @@ from prompts import (
 from research_profile import ResearchProfile
 from evidence import link_themes_to_codes, matched_codes
 from analysis_records import scorable_themes
+from analysis_progress import ProgressEvent
+from parallel_tasks import admission_checkpoint, check_model_call, ordered_parallel_map
 
 
 class EvaluationCriteria(BaseModel):
@@ -128,6 +129,8 @@ class EvaluationAgent:
         self.client = OpenAI(api_key=api_key, base_url=base_url)
         self.model = model
         self.max_workers = max_workers
+        self.on_progress: Optional[Callable[[ProgressEvent], None]] = None
+        self.concurrency_limit: Optional[Callable[[], int]] = None
         if decision_provider is None:
             # Default decision path: the main model answers typed questions
             # in JSON mode, so hybrid evaluation works with every provider.
@@ -216,8 +219,7 @@ class EvaluationAgent:
             instructions=instructions["needs_refinement"],
         )
 
-        if self.before_model_call:
-            self.before_model_call(f"评估主题 · {theme['name']}")
+        check_model_call(self.before_model_call, f"评估主题 · {theme['name']}")
         try:
             answers = self.decision_provider.ask(state, questions)
         except Exception as exc:
@@ -261,8 +263,7 @@ class EvaluationAgent:
             or flagged_for_review
         )
         if needs_detail:
-            if self.before_model_call:
-                self.before_model_call(f"生成评估反馈 · {theme['name']}")
+            check_model_call(self.before_model_call, f"生成评估反馈 · {theme['name']}")
             feedback = self._generate_detailed_feedback(
                 theme, other_themes, original_codes, weighted_scores,
             )
@@ -367,8 +368,7 @@ class EvaluationAgent:
             study=self.study,
         )
 
-        if self.before_model_call:
-            self.before_model_call(stage or f"评估主题 · {theme['name']}")
+        check_model_call(self.before_model_call, stage or f"评估主题 · {theme['name']}")
         response = self.client.chat.completions.create(
             model=self.model,
             messages=[
@@ -436,11 +436,12 @@ class EvaluationAgent:
             print(f"  Evaluating theme {idx + 1}/{len(themes)}: {theme['name']}")
             return self.evaluate_theme(theme, themes, original_codes)
 
-        if len(supported) > 1 and self.max_workers > 1:
-            with ThreadPoolExecutor(max_workers=min(self.max_workers, len(supported))) as executor:
-                theme_evaluations = list(executor.map(evaluate_indexed, enumerate(supported)))
-        else:
-            theme_evaluations = [evaluate_indexed(item) for item in enumerate(supported)]
+        theme_evaluations = ordered_parallel_map(
+            evaluate_indexed, enumerate(supported), max_workers=self.max_workers,
+            stage="评估主题", unit="主题", on_progress=self.on_progress,
+            concurrency_limit=self.concurrency_limit,
+            before_task=admission_checkpoint(self.before_model_call),
+        )
 
         # Calculate average score
         average_score = sum(e.overall_score for e in theme_evaluations) / len(theme_evaluations)

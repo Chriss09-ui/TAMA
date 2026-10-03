@@ -11,43 +11,50 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'src'))
 
 from tama import ThreadlineFramework, load_transcript
 from decisions.jev_client import JevDecisionClient
-from model_config import api_model_name
+from model_config import DEFAULT_MIMO_MODEL, api_model_name
+from api_settings import get_api_setting
 
 
 def get_decision_provider():
     """Prefer the Jev decision API when JEV_API_KEY is set; otherwise the main model decides."""
-    jev_api_key = os.getenv("JEV_API_KEY", "").strip()
+    jev_api_key = get_api_setting("JEV_API_KEY", "").strip()
     if jev_api_key:
         return JevDecisionClient(
             api_key=jev_api_key,
-            base_url=os.getenv("JEV_BASE_URL") or None,
-            model=os.getenv("JEV_MODEL") or None,
+            base_url=get_api_setting("JEV_BASE_URL") or None,
+            model=get_api_setting("JEV_MODEL") or None,
         )
     return None
 
 
 def get_model_config():
-    """Select MiMo, DeepSeek, or OpenAI from the configured API keys."""
-    mimo_api_key = os.getenv("MIMO_API_KEY")
+    """Select MiMo, DeepSeek, or a custom provider from the configured API keys."""
+    mimo_api_key = get_api_setting("MIMO_API_KEY")
     if mimo_api_key:
         return (
             mimo_api_key,
-            os.getenv("MIMO_MODEL", "mimo-v2.5-pro"),
-            os.getenv("MIMO_BASE_URL") or "https://api.xiaomimimo.com/v1"
+            get_api_setting("MIMO_MODEL", DEFAULT_MIMO_MODEL),
+            get_api_setting("MIMO_BASE_URL") or "https://api.xiaomimimo.com/v1"
         )
 
-    deepseek_api_key = os.getenv("DEEPSEEK_API_KEY")
+    deepseek_api_key = get_api_setting("DEEPSEEK_API_KEY")
     if deepseek_api_key:
         return (
             deepseek_api_key,
-            api_model_name("DeepSeek", os.getenv("DEEPSEEK_MODEL", "deepseek-flash")),
-            os.getenv("DEEPSEEK_BASE_URL") or "https://api.deepseek.com"
+            api_model_name("DeepSeek", get_api_setting("DEEPSEEK_MODEL", "deepseek-flash")),
+            get_api_setting("DEEPSEEK_BASE_URL") or "https://api.deepseek.com"
         )
 
-    openai_api_key = os.getenv("OPENAI_API_KEY")
-    if not openai_api_key:
-        raise ValueError("Please set MIMO_API_KEY, DEEPSEEK_API_KEY, or OPENAI_API_KEY environment variable")
-    return openai_api_key, os.getenv("OPENAI_MODEL", "gpt-4o"), None
+    custom_api_key = get_api_setting("CUSTOM_API_KEY", "").strip()
+    if not custom_api_key:
+        raise ValueError("Please set MIMO_API_KEY, DEEPSEEK_API_KEY, or CUSTOM_API_KEY environment variable")
+    custom_model = get_api_setting("CUSTOM_MODEL", "").strip()
+    custom_base_url = get_api_setting("CUSTOM_BASE_URL", "").strip()
+    if not custom_model:
+        raise ValueError("Please set CUSTOM_MODEL environment variable")
+    if not custom_base_url:
+        raise ValueError("Please set CUSTOM_BASE_URL environment variable")
+    return custom_api_key, custom_model, custom_base_url
 
 
 def main():

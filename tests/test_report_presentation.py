@@ -19,7 +19,7 @@ from analysis_job import JOB_REGISTRY
 from evidence_fixtures import matched_code
 from reporting import report_lines
 from streamlit_app import build_result_docx
-from ui_design import evidence_quote, narrative, theme_outline
+from ui_design import evidence_quote, narrative, theme_outline, format_duration, report_identity
 
 
 def presentation_result():
@@ -40,9 +40,47 @@ def presentation_result():
 
 
 class ReportPresentationTests(unittest.TestCase):
+    def test_old_progress_snapshot_does_not_invent_time_or_concurrency(self):
+        app = AppTest.from_string("""
+from types import SimpleNamespace
+from ui_design import render_job_progress
+render_job_progress(SimpleNamespace(stage="归并编码", pause_requested=False, cancelled=False))
+""").run()
+        self.assertFalse(app.exception)
+        self.assertEqual([item.value for item in app.metric], ["—", "—", "— / —"])
+
+    def test_local_and_serial_stages_do_not_imply_api_counts_or_overall_progress(self):
+        source = """
+from types import SimpleNamespace
+from ui_design import render_job_progress
+snapshot = SimpleNamespace(stage=STAGE, pause_requested=False, cancelled=False,
+                           total=1, completed=0, active=1, concurrency_limit=8,
+                           elapsed_seconds=180, stage_elapsed_seconds=150, idle_seconds=150)
+render_job_progress(snapshot)
+"""
+        for stage in ("切分材料", "修订主题"):
+            app = AppTest.from_string(source.replace("STAGE", repr(stage))).run()
+            self.assertFalse(app.exception)
+            self.assertFalse(app.get("progress"))
+            self.assertTrue(any("超过 2 分钟" in item.value for item in app.warning))
+            captions = " ".join(item.value for item in app.caption)
+            if stage == "切分材料":
+                self.assertNotIn("模型结果", captions)
+            else:
+                self.assertIn("模型结果", captions)
+
+    def test_duration_handles_old_reports_and_invalid_values(self):
+        self.assertEqual(format_duration(3661.9), "01:01:01")
+        self.assertEqual(format_duration(0), "00:00:00")
+        for value in (None, "10", True, -1, float("nan"), float("inf")):
+            self.assertEqual(format_duration(value), "—")
+        with patch("ui_design.st.markdown") as render:
+            report_identity({"metadata": {"elapsed_seconds": 123}})
+        self.assertIn("总用时 00:02:03", render.call_args.args[0])
+
     def test_report_views_keep_editing_and_export_separate(self):
         JOB_REGISTRY.clear_completed()
-        with patch.dict(os.environ, {}, clear=True), patch("keyring.get_password", return_value=None):
+        with patch.dict(os.environ, {}, clear=True), patch("api_settings.dotenv_values", return_value={}):
             app = AppTest.from_file(str(ROOT / "streamlit_app.py"))
             app.session_state["analysis_result"] = presentation_result()
             app.run()
@@ -65,7 +103,7 @@ class ReportPresentationTests(unittest.TestCase):
         JOB_REGISTRY.clear_completed()
         result = presentation_result()
         result["codes"][0]["evidence_status"] = "unmatched"
-        with patch.dict(os.environ, {}, clear=True), patch("keyring.get_password", return_value=None):
+        with patch.dict(os.environ, {}, clear=True), patch("api_settings.dotenv_values", return_value={}):
             app = AppTest.from_file(str(ROOT / "streamlit_app.py"))
             app.session_state["analysis_result"] = result
             app.run()

@@ -23,7 +23,7 @@ def legacy_report():
 class ReportLibraryTests(unittest.TestCase):
     def setUp(self):
         JOB_REGISTRY.clear_completed()
-        for target, value in (("keyring.get_password", None), ("report_library.local_reports", [])):
+        for target, value in (("api_settings.dotenv_values", {}), ("report_library.local_reports", [])):
             mock = patch(target, return_value=value)
             mock.start()
             self.addCleanup(mock.stop)

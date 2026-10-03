@@ -24,7 +24,7 @@ class ModelEndpointTests(unittest.TestCase):
                     patch("tama.RefinementAgent") as refinement:
                 ThreadlineFramework(
                     api_key="mimo-test",
-                    model="mimo-v2.5-pro",
+                    model="mimo-v2.6-pro",
                     output_dir=output_dir,
                     base_url="https://api.xiaomimimo.com/v1",
                     chunk_size=600,
@@ -32,20 +32,20 @@ class ModelEndpointTests(unittest.TestCase):
                 )
 
         generation.assert_called_once_with(
-            api_key="mimo-test", model="mimo-v2.5-pro",
+            api_key="mimo-test", model="mimo-v2.6-pro",
             base_url="https://api.xiaomimimo.com/v1", chunk_size=600,
             chunk_strategy="manual",
             max_workers=2,
             study=ResearchProfile(),
         )
         evaluation.assert_called_once_with(
-            api_key="mimo-test", model="mimo-v2.5-pro", expert_criteria=None,
+            api_key="mimo-test", model="mimo-v2.6-pro", expert_criteria=None,
             base_url="https://api.xiaomimimo.com/v1", max_workers=2,
             decision_provider=None, confidence_threshold=0.7,
             study=ResearchProfile(),
         )
         refinement.assert_called_once_with(
-            api_key="mimo-test", model="mimo-v2.5-pro",
+            api_key="mimo-test", model="mimo-v2.6-pro",
             base_url="https://api.xiaomimimo.com/v1", study=ResearchProfile(),
         )
 
@@ -56,7 +56,7 @@ class ModelEndpointTests(unittest.TestCase):
         ):
             with self.subTest(agent=agent.__name__):
                 with patch(f"{module}.OpenAI") as client:
-                    agent(api_key="mimo-test", model="mimo-v2.5-pro", base_url="https://api.xiaomimimo.com/v1")
+                    agent(api_key="mimo-test", model="mimo-v2.6-pro", base_url="https://api.xiaomimimo.com/v1")
                 client.assert_called_once_with(
                     api_key="mimo-test", base_url="https://api.xiaomimimo.com/v1"
                 )
@@ -67,7 +67,7 @@ class ModelEndpointTests(unittest.TestCase):
         with patch("agents.evaluation_agent.OpenAI") as client, \
                 patch("agents.evaluation_agent.LLMDecisionClient"):
             EvaluationAgent(
-                api_key="mimo-test", model="mimo-v2.5-pro",
+                api_key="mimo-test", model="mimo-v2.6-pro",
                 base_url="https://api.xiaomimimo.com/v1",
             )
         client.assert_called_once_with(

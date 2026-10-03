@@ -2,6 +2,7 @@
 
 import os
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -15,6 +16,27 @@ from example_usage import get_model_config
 
 
 class ExampleModelConfigTests(unittest.TestCase):
+    def setUp(self):
+        env_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(env_dir.cleanup)
+        self.env_path = Path(env_dir.name) / ".env"
+        env_patch = patch("api_settings.ENV_PATH", self.env_path)
+        env_patch.start()
+        self.addCleanup(env_patch.stop)
+
+    def test_example_reads_project_env_configuration(self):
+        self.env_path.write_text(
+            'MIMO_API_KEY="file-test"\nMIMO_MODEL="vendor-model"\nMIMO_BASE_URL="https://custom.example/v1"\n',
+            encoding="utf-8",
+        )
+        with patch.dict(os.environ, {"MIMO_API_KEY": "env-test"}, clear=True):
+            self.assertEqual(get_model_config(), ("file-test", "vendor-model", "https://custom.example/v1"))
+
+    def test_empty_project_env_key_disables_old_process_key(self):
+        self.env_path.write_text('MIMO_API_KEY=""\n', encoding="utf-8")
+        with patch.dict(os.environ, {"MIMO_API_KEY": "env-test", "DEEPSEEK_API_KEY": "deepseek-test"}, clear=True):
+            self.assertEqual(get_model_config()[0], "deepseek-test")
+
     def test_example_selects_deepseek_defaults(self):
         with patch.dict(os.environ, {"DEEPSEEK_API_KEY": "deepseek-test"}, clear=True):
             self.assertEqual(
@@ -36,7 +58,9 @@ class ExampleModelConfigTests(unittest.TestCase):
     def test_example_provider_priority(self):
         with patch.dict(os.environ, {
             "DEEPSEEK_API_KEY": "deepseek-test",
-            "OPENAI_API_KEY": "openai-test",
+            "CUSTOM_API_KEY": "custom-test",
+            "CUSTOM_MODEL": "vendor-model",
+            "CUSTOM_BASE_URL": "https://custom.example/v1",
         }, clear=True):
             self.assertEqual(get_model_config()[0], "deepseek-test")
 
@@ -50,7 +74,7 @@ class ExampleModelConfigTests(unittest.TestCase):
         with patch.dict(os.environ, {"MIMO_API_KEY": "mimo-test"}, clear=True):
             self.assertEqual(
                 get_model_config(),
-                ("mimo-test", "mimo-v2.5-pro", "https://api.xiaomimimo.com/v1")
+                ("mimo-test", "mimo-v2.6-pro", "https://api.xiaomimimo.com/v1")
             )
 
     def test_example_uses_token_plan_endpoint(self):
@@ -61,9 +85,31 @@ class ExampleModelConfigTests(unittest.TestCase):
         ):
             self.assertEqual(get_model_config()[2], "https://plan.example/v1")
 
-    def test_example_keeps_openai_default(self):
+    def test_example_uses_custom_provider_configuration(self):
+        with patch.dict(os.environ, {
+            "CUSTOM_API_KEY": " custom-test ",
+            "CUSTOM_MODEL": " vendor-model ",
+            "CUSTOM_BASE_URL": " https://custom.example/v1 ",
+        }, clear=True):
+            self.assertEqual(
+                get_model_config(), ("custom-test", "vendor-model", "https://custom.example/v1")
+            )
+
+    def test_custom_provider_requires_model_and_endpoint(self):
+        for field in ("CUSTOM_MODEL", "CUSTOM_BASE_URL"):
+            env = {
+                "CUSTOM_API_KEY": "custom-test", "CUSTOM_MODEL": "vendor-model",
+                "CUSTOM_BASE_URL": "https://custom.example/v1",
+            }
+            env[field] = " "
+            with self.subTest(field=field), patch.dict(os.environ, env, clear=True):
+                with self.assertRaisesRegex(ValueError, field):
+                    get_model_config()
+
+    def test_openai_key_no_longer_selects_a_provider(self):
         with patch.dict(os.environ, {"OPENAI_API_KEY": "openai-test"}, clear=True):
-            self.assertEqual(get_model_config(), ("openai-test", "gpt-4o", None))
+            with self.assertRaisesRegex(ValueError, "CUSTOM_API_KEY"):
+                get_model_config()
 
     def test_jev_env_key_selects_jev_client(self):
         import example_usage

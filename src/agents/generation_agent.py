@@ -5,11 +5,10 @@ Handles chunking, coding, and initial theme generation from interview transcript
 
 from bisect import bisect_right
 from datetime import date
-from typing import List, Dict, Any, Literal, Optional
+from typing import Callable, List, Dict, Any, Literal, Optional
 from openai import OpenAI, OpenAIError
 from pydantic import BaseModel, Field, StrictInt
 import json
-from concurrent.futures import ThreadPoolExecutor
 import re
 
 from chunking import (
@@ -22,6 +21,8 @@ from code_mapping import apply_related_codes, attach_category_names, build_code_
 from code_memos import code_memos_for_model, memos_from_groups
 from codebook import evidence_key, exact_merge, semantic_merge
 from analysis_job import AnalysisCancelled
+from analysis_progress import ProgressEvent
+from parallel_tasks import admission_checkpoint, check_model_call, ordered_parallel_map, tracked_task
 from evidence import is_matched, link_themes_to_codes, matched_codes, source_document, validate_evidence
 from prompts import (
     CODE_EXTRACTION_SYSTEM_PROMPT,
@@ -153,6 +154,8 @@ class GenerationAgent:
         self.chunk_strategy = resolved_strategy
         self.max_workers = max_workers
         self.before_model_call = None
+        self.on_progress: Optional[Callable[[ProgressEvent], None]] = None
+        self.concurrency_limit: Optional[Callable[[], int]] = None
         self.last_chunk_plan = None
         self.study = study or ResearchProfile()
         self.analytic_storyline = ""
@@ -213,8 +216,7 @@ class GenerationAgent:
         """
         prompt = build_code_extraction_prompt(chunk.text, self.study, self.source_metadata)
 
-        if self.before_model_call:
-            self.before_model_call(f"提取编码 · 片段 {chunk.chunk_id + 1}")
+        check_model_call(self.before_model_call, f"提取编码 · 片段 {chunk.chunk_id + 1}")
         response = self.client.chat.completions.create(
             model=self.model,
             messages=[
@@ -281,11 +283,12 @@ class GenerationAgent:
         all_codes = []
         code_id = self.code_id_start
 
-        if len(chunks) > 1 and self.max_workers > 1:
-            with ThreadPoolExecutor(max_workers=min(self.max_workers, len(chunks))) as executor:
-                code_batches = list(executor.map(self.generate_codes_from_chunk, chunks))
-        else:
-            code_batches = [self.generate_codes_from_chunk(chunk) for chunk in chunks]
+        code_batches = ordered_parallel_map(
+            self.generate_codes_from_chunk, chunks, max_workers=self.max_workers,
+            stage="提取编码", unit="片段", on_progress=self.on_progress,
+            concurrency_limit=self.concurrency_limit,
+            before_task=admission_checkpoint(self.before_model_call),
+        )
 
         for chunk_codes in code_batches:
             # Reassign code IDs to maintain global uniqueness
@@ -323,17 +326,16 @@ class GenerationAgent:
             }
             for code in active
         ]
-        if self.before_model_call:
-            self.before_model_call("归并编码")
-        response = self.client.chat.completions.create(
-            model=self.model,
-            messages=[
-                {"role": "system", "content": CODE_EXTRACTION_SYSTEM_PROMPT},
-                {"role": "user", "content": build_code_merge_prompt(payload, self.study)},
-            ],
-            temperature=0.2,
-            response_format={"type": "json_object"},
-        )
+        with tracked_task("归并编码", self.on_progress, self.before_model_call):
+            response = self.client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": CODE_EXTRACTION_SYSTEM_PROMPT},
+                    {"role": "user", "content": build_code_merge_prompt(payload, self.study)},
+                ],
+                temperature=0.2,
+                response_format={"type": "json_object"},
+            )
         try:
             result = json.loads(response.choices[0].message.content)
             groups = result.get("groups") or []
@@ -374,17 +376,16 @@ class GenerationAgent:
             }
             for code in active
         ]
-        if self.before_model_call:
-            self.before_model_call("映射编码")
-        response = self.client.chat.completions.create(
-            model=self.model,
-            messages=[
-                {"role": "system", "content": CODE_EXTRACTION_SYSTEM_PROMPT},
-                {"role": "user", "content": build_code_map_prompt(payload, self.study)},
-            ],
-            temperature=0.2,
-            response_format={"type": "json_object"},
-        )
+        with tracked_task("映射编码", self.on_progress, self.before_model_call):
+            response = self.client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": CODE_EXTRACTION_SYSTEM_PROMPT},
+                    {"role": "user", "content": build_code_map_prompt(payload, self.study)},
+                ],
+                temperature=0.2,
+                response_format={"type": "json_object"},
+            )
         try:
             result = json.loads(response.choices[0].message.content)
             self.code_map = build_code_map(codes, result if isinstance(result, dict) else None)
@@ -430,30 +431,45 @@ class GenerationAgent:
                     "evidence": self._family_evidence(code, codes),
                 })
         if len(compact) <= THEME_BATCH_SIZE:
-            result = self._request_themes(self._theme_prompt(compact), "归纳主题")
+            with tracked_task("归纳主题", self.on_progress, admission_checkpoint(self.before_model_call)):
+                result = self._request_themes(self._theme_prompt(compact), "归纳主题")
         else:
-            candidates = []
-            for start in range(0, len(compact), THEME_BATCH_SIZE):
-                batch = compact[start:start + THEME_BATCH_SIZE]
-                part = self._request_themes(
+            batches = [compact[start:start + THEME_BATCH_SIZE]
+                       for start in range(0, len(compact), THEME_BATCH_SIZE)]
+
+            def request_batch(item):
+                index, batch = item
+                return self._request_themes(
                     self._theme_prompt(batch),
-                    f"归纳主题 · 第 {start // THEME_BATCH_SIZE + 1} 组",
+                    f"归纳主题 · 第 {index + 1}/{len(batches)} 组",
                 )
-                candidates.extend(part.get("themes", []))
+
+            parts = ordered_parallel_map(
+                request_batch, enumerate(batches), max_workers=self.max_workers,
+                stage="归纳主题", unit="组", on_progress=self.on_progress,
+                concurrency_limit=self.concurrency_limit,
+                before_task=admission_checkpoint(self.before_model_call),
+            )
+            candidates = [theme for part in parts for theme in part.get("themes", [])]
             while len(candidates) > THEME_BATCH_SIZE:
-                grouped = []
-                for start in range(0, len(candidates), THEME_BATCH_SIZE):
-                    part = self._request_themes(
-                        build_theme_consolidation_prompt(candidates[start:start + THEME_BATCH_SIZE], self.study),
-                        "合并候选主题",
-                    )
-                    grouped.extend(part.get("themes", []))
+                groups = [candidates[start:start + THEME_BATCH_SIZE]
+                          for start in range(0, len(candidates), THEME_BATCH_SIZE)]
+                parts = ordered_parallel_map(
+                    lambda group: self._request_themes(
+                        build_theme_consolidation_prompt(group, self.study), "合并候选主题",
+                    ),
+                    groups, max_workers=self.max_workers, stage="合并候选主题", unit="组",
+                    on_progress=self.on_progress, concurrency_limit=self.concurrency_limit,
+                    before_task=admission_checkpoint(self.before_model_call),
+                )
+                grouped = [theme for part in parts for theme in part.get("themes", [])]
                 if len(grouped) >= len(candidates):
                     raise ValueError("候选主题未能归并，请检查模型返回或增大主题分批上限。")
                 candidates = grouped
-            result = self._request_themes(
-                build_theme_consolidation_prompt(candidates, self.study), "合并候选主题",
-            )
+            with tracked_task("合并候选主题", self.on_progress, admission_checkpoint(self.before_model_call)):
+                result = self._request_themes(
+                    build_theme_consolidation_prompt(candidates, self.study), "合并候选主题",
+                )
         self.analytic_storyline = result.get("analytic_storyline") or ""
         themes = []
 
@@ -530,8 +546,7 @@ class GenerationAgent:
                     "kind": theme.kind} for theme in themes]
 
         def review_chunk(chunk):
-            if self.before_model_call:
-                self.before_model_call(f"全文回查 · 片段 {chunk.chunk_id + 1}/{len(chunks)}")
+            check_model_call(self.before_model_call, f"全文回查 · 片段 {chunk.chunk_id + 1}/{len(chunks)}")
             existing = [code.model_dump() for code in matched_codes(codes)
                         if code.source.source_id == self.source_metadata["source_id"]
                         and chunk.start_char <= code.source_start < chunk.end_char]
@@ -563,13 +578,13 @@ class GenerationAgent:
                     ConnectionError, TimeoutError) as exc:
                 return chunk.chunk_id, [], type(exc).__name__
 
-        if len(chunks) > 1 and self.max_workers > 1:
-            with ThreadPoolExecutor(max_workers=min(self.max_workers, len(chunks))) as executor:
-                batches = list(executor.map(review_chunk, chunks))
-        else:
-            batches = [review_chunk(chunk) for chunk in chunks]
-        if self.before_model_call:
-            self.before_model_call("校验全文回查证据")
+        batches = ordered_parallel_map(
+            review_chunk, chunks, max_workers=self.max_workers, stage="全文回查", unit="片段",
+            on_progress=self.on_progress, concurrency_limit=self.concurrency_limit,
+            failed_result=lambda result: result[2] is not None,
+            before_task=admission_checkpoint(self.before_model_call),
+        )
+        check_model_call(self.before_model_call, "校验全文回查证据")
         review = {"status": "complete", "total_chunks": len(chunks), "reviewed_chunks": 0,
                   "failed_chunks": [], "added_code_ids": [], "findings": []}
         seen = {evidence_key(code): code for code in matched_codes(codes)}
@@ -604,8 +619,7 @@ class GenerationAgent:
         return review
 
     def _request_themes(self, prompt: str, stage: str) -> Dict[str, Any]:
-        if self.before_model_call:
-            self.before_model_call(stage)
+        check_model_call(self.before_model_call, stage)
         response = self.client.chat.completions.create(
             model=self.model,
             messages=[
@@ -632,7 +646,8 @@ class GenerationAgent:
         """
         self.corpus_review_findings = []
         print("Step 1/5: Chunking transcript...")
-        chunks = self.chunk_transcript(transcript)
+        with tracked_task("切分材料", self.on_progress, self.before_model_call):
+            chunks = self.chunk_transcript(transcript)
         print(f"  Generated {len(chunks)} chunks")
 
         print("Step 2/5: Generating codes from chunks...")

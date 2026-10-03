@@ -1,12 +1,97 @@
 """Presentation helpers for the white, typography-led research workspace."""
 
 from html import escape
+from math import isfinite
 from pathlib import Path
 
 import streamlit as st
 
 from evidence import is_matched
 from reporting import KIND_LABELS
+from analysis_progress import normalize_phase
+
+
+def format_duration(seconds: float | None) -> str:
+    if isinstance(seconds, bool) or not isinstance(seconds, (int, float)) or not isfinite(seconds) or seconds < 0:
+        return "—"
+    minutes, seconds = divmod(int(seconds), 60)
+    hours, minutes = divmod(minutes, 60)
+    return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+
+
+def render_job_progress(snapshot) -> None:
+    """Show exact batch progress without inventing a whole-analysis estimate."""
+    phase = normalize_phase(snapshot.stage)
+    total = getattr(snapshot, "total", 0)
+    completed = getattr(snapshot, "completed", 0)
+    active = getattr(snapshot, "active", 0)
+    limit = getattr(snapshot, "concurrency_limit", None)
+    limit_label = str(limit) if limit is not None else "—"
+    unit = getattr(snapshot, "unit", "任务")
+    paused = snapshot.pause_requested
+    state = "正在取消" if snapshot.cancelled else "已请求暂停" if paused else "分析进行中"
+    modifier = " is-paused" if paused or snapshot.cancelled else ""
+    with st.container(key="analysis_progress", border=True):
+        st.markdown(
+            f'<div class="tl-progress-heading{modifier}"><div>'
+            f'<span class="tl-progress-state"><i aria-hidden="true"></i>{state}</span>'
+            f'<h3>{escape(phase)}</h3></div>'
+            '<span class="tl-progress-refresh">每秒更新</span></div>', unsafe_allow_html=True,
+        )
+        time_col, phase_col, active_col = st.columns(3)
+        time_col.metric("累计用时", format_duration(getattr(snapshot, "elapsed_seconds", None)))
+        phase_col.metric("当前步骤用时", format_duration(getattr(snapshot, "stage_elapsed_seconds", None)),
+                         help="从当前批次或步骤开始计算。累计用时包含等待与暂停。")
+        active_col.metric("正在处理 / 并发上限", f"{active} / {limit_label}" if total else f"— / {limit_label}")
+        if not hasattr(snapshot, "elapsed_seconds"):
+            st.caption("本次任务在更新前启动，无法补算累计用时；新任务会完整记录进度。")
+
+        iteration = getattr(snapshot, "iteration", 0)
+        if iteration:
+            st.caption(f"第 {iteration} / {getattr(snapshot, 'max_iterations', iteration)} 轮评估与修订")
+        if total > 1:
+            st.progress(min(completed / total, 1.0), text=f"本批次已处理 {completed} / {total} 个{unit}")
+            failed = getattr(snapshot, "failed", 0)
+            remaining = max(total - completed - active, 0)
+            st.caption(f"正在处理 {active} 个 · 等待处理 {remaining} 个" + (f" · 未成功 {failed} 个" if failed else ""))
+        elif total == 1:
+            if completed:
+                st.caption("本步已完成，正在进入下一步。")
+            elif phase not in {"切分材料", "校验全文回查证据", "整理本次结果"}:
+                st.caption("正在等待本步骤的模型结果。")
+
+        explanations = {
+            "准备运行": "正在准备分析任务和模型连接。",
+            "切分材料": "正在按自然语义边界整理访谈片段。",
+            "提取编码": "多个访谈片段独立编码，完成一个就更新一次计数。",
+            "归并编码": "正在合并重复编码；本步骤按顺序处理，提高并发对这一阶段帮助有限。",
+            "映射编码": "正在将片段编码对应到统一编码，本步骤按顺序处理。",
+            "归纳主题": "正在从编码中形成候选主题；独立批次并行，最终整合按顺序进行。",
+            "合并候选主题": "正在归并候选主题；独立批次并行，最终整合按顺序进行。",
+            "全文回查": "正在逐片检查遗漏和反例，完成一个片段就更新一次计数。",
+            "校验全文回查证据": "正在核对回查发现与原文是否一致。",
+            "评估主题": "正在检查各主题的质量；必要时还会等待模型生成改进建议。",
+            "修订主题": "正在结合评估反馈调整主题，本步骤按顺序处理。",
+            "整理本次结果": "正在汇总本次报告和记录。",
+        }
+        st.caption(explanations.get(phase, "正在处理当前步骤，收到结果后会更新。"))
+        if getattr(snapshot, "idle_seconds", 0) >= 120 and not paused and not snapshot.cancelled:
+            st.warning("超过 2 分钟没有新进展，可能仍在等待模型返回或接口重试；耗时还在统计。")
+
+        events = getattr(snapshot, "recent_events", ())
+        if events:
+            st.markdown('<div class="tl-progress-label">最近进展</div><ol class="tl-progress-events">' + ''.join(
+                f'<li><time>{format_duration(event.elapsed_seconds)}</time><span>{escape(event.message)}</span></li>'
+                for event in reversed(events[-3:])
+            ) + '</ol>', unsafe_allow_html=True)
+        history = getattr(snapshot, "phase_history", ())
+        if history:
+            with st.expander(f"已进行的步骤 · {len(history)} 项"):
+                labels = {"complete": "完成", "partial": "已结束", "cancelled": "取消", "error": "未完成"}
+                for item in history:
+                    count = f" · {item.completed}/{item.total} 个{item.unit}" if item.total else ""
+                    round_label = f" · 第 {item.iteration} 轮" if item.iteration else ""
+                    st.caption(f"{item.phase}{round_label} · {labels.get(item.state, '已结束')} · {format_duration(item.elapsed_seconds)}{count}")
 
 
 def load_styles() -> None:
@@ -32,6 +117,9 @@ def report_identity(result: dict) -> None:
                                (result.get("case_id"), result.get("session_name")) if value))
     if result.get("timestamp"):
         details.append(str(result["timestamp"]))
+    duration = (result.get("metadata") or {}).get("elapsed_seconds")
+    if format_duration(duration) != "—":
+        details.append(f"总用时 {format_duration(duration)}")
     st.markdown(
         '<div class="tl-report-meta"><span class="tl-eyebrow">ANALYSIS REPORT</span>'
         f'<span>{escape(" · ".join(details))}</span></div>', unsafe_allow_html=True,

@@ -9,6 +9,7 @@ from datetime import datetime
 import json
 import uuid
 from dataclasses import replace
+from time import monotonic
 
 from agents.generation_agent import GenerationAgent
 from agents.evaluation_agent import EvaluationAgent
@@ -34,6 +35,8 @@ from research_records import (
     decisions_for_model, prepare_previous_result, render_research_records,
 )
 from analysis_records import ResearcherAnnotations, ensure_theme_ids, record_event, scorable_themes
+from analysis_progress import ProgressEvent
+from parallel_tasks import admission_checkpoint, tracked_task
 
 
 class ThreadlineFramework:
@@ -145,6 +148,8 @@ class ThreadlineFramework:
         previous_result: Optional[Dict[str, Any]] = None,
         confirmed_decisions: Optional[list[dict]] = None,
         include_previous_context: bool = False,
+        on_progress: Optional[Callable[[ProgressEvent], None]] = None,
+        concurrency_limit: Optional[Callable[[], int]] = None,
     ) -> Dict[str, Any]:
         """
         Run complete Threadline analysis with iterative refinement.
@@ -156,10 +161,13 @@ class ThreadlineFramework:
             before_model_call: Optional checkpoint called before each model request
             case_id: Optional pseudonymous case identifier for research records
             save_final: Write final JSON and summary when true
+            on_progress: Receive stage and completed-work events without source content
+            concurrency_limit: Current limit for queued independent requests
 
         Returns:
             Dictionary containing final themes and analysis metadata
         """
+        started_at = monotonic()
         if session_name is None:
             session_name = f"threadline_session_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
         if os.path.basename(session_name) != session_name or session_name in (".", ".."):
@@ -195,6 +203,9 @@ class ThreadlineFramework:
         self.generation_agent.before_model_call = before_model_call
         self.evaluation_agent.before_model_call = before_model_call
         self.refinement_agent.before_model_call = before_model_call
+        for agent in (self.generation_agent, self.evaluation_agent):
+            agent.on_progress = on_progress
+            agent.concurrency_limit = concurrency_limit
 
         session_dir = None
         if save_final or save_intermediate:
@@ -257,6 +268,9 @@ class ThreadlineFramework:
             if not scorable_themes(themes):
                 break
             iteration += 1
+            if on_progress:
+                on_progress(ProgressEvent("round", "评估主题", iteration=iteration,
+                                          max_iterations=self.max_iterations))
 
             print("\n" + "=" * 80)
             print(f"ITERATION {iteration}/{self.max_iterations}")
@@ -321,13 +335,14 @@ class ThreadlineFramework:
                 f"03_refinement_iter{iteration}.json"
             ) if save_intermediate else None
 
-            refinement_result = self.refinement_agent.run(
-                themes=scorable_themes(themes),
-                evaluation_results=evaluation_result,
-                codes=eligible,
-                save_path=refinement_path,
-                memos=memos_for_model(memos),
-            )
+            with tracked_task("修订主题", on_progress, admission_checkpoint(before_model_call)):
+                refinement_result = self.refinement_agent.run(
+                    themes=scorable_themes(themes),
+                    evaluation_results=evaluation_result,
+                    codes=eligible,
+                    save_path=refinement_path,
+                    memos=memos_for_model(memos),
+                )
             protected_findings = [theme for theme in themes if theme not in scorable_themes(themes)]
             old_by_name = {theme["name"]: theme for theme in themes}
             for operation in refinement_result.get("refinement_plan", {}).get("operations") or []:
@@ -455,6 +470,7 @@ class ThreadlineFramework:
         )
         if session_dir:
             final_result["output_dir"] = session_dir
+        final_result["metadata"]["elapsed_seconds"] = round(monotonic() - started_at, 3)
 
         if save_final:
             final_path = os.path.join(session_dir, "00_final_results.json")

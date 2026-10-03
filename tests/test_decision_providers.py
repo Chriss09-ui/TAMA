@@ -59,7 +59,7 @@ class LLMDecisionClientTests(unittest.TestCase):
                 "needs_check": {"probability": 0.7, "confidence": 0.6},
                 "route": {"choice": "split", "confidence": 0.9},
             }})
-            answers = LLMDecisionClient(api_key="test", model="mimo-v2.5-pro").ask(
+            answers = LLMDecisionClient(api_key="test", model="mimo-v2.6-pro").ask(
                 {"theme": "日常安排"}, QUESTIONS,
             )
 

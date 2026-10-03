@@ -322,9 +322,9 @@ class NonPatternWorkflowTests(unittest.TestCase):
 class SecondPhaseInterfaceTests(unittest.TestCase):
     def setUp(self):
         JOB_REGISTRY.clear_completed()
-        self.vault = patch("keyring.get_password", return_value=None)
-        self.vault.start()
-        self.addCleanup(self.vault.stop)
+        self.env_read = patch("api_settings.dotenv_values", return_value={})
+        self.env_read.start()
+        self.addCleanup(self.env_read.stop)
 
     def app(self, result):
         app = AppTest.from_file(str(ROOT / "streamlit_app.py"))

@@ -38,9 +38,9 @@ def study_result(round_id="R1"):
 class ResearchEditorTests(unittest.TestCase):
     def setUp(self):
         JOB_REGISTRY.clear_completed()
-        vault = patch("keyring.get_password", return_value=None)
-        vault.start()
-        self.addCleanup(vault.stop)
+        env_read = patch("api_settings.dotenv_values", return_value={})
+        env_read.start()
+        self.addCleanup(env_read.stop)
 
     def test_grounded_mode_renders_all_editors_and_saves_a_comparison(self):
         with patch.dict(os.environ, {}, clear=True):
@@ -101,7 +101,7 @@ class ResearchEditorTests(unittest.TestCase):
             app.selectbox(key="analysis_mode").set_value("建构扎根理论支持").run()
             app.text_input(key="source_source_id").set_value("Interview-02").run()
             app.text_area(key="transcript_text").set_value("受访者：新资料。").run()
-            app.text_input(key="api_key_DeepSeek").set_value("test").run()
+            app.text_input(key="api_key_MiMo").set_value("test").run()
             app.button(key="run_analysis").click().run()
             self.assertTrue(app.session_state["analysis_job"].done.wait(2))
             app.run()
@@ -177,7 +177,7 @@ class ResearchEditorTests(unittest.TestCase):
             self.assertTrue(app.checkbox(key="corpus_review").value)
             app.checkbox(key="corpus_review").uncheck().run()
             app.text_area(key="transcript_text").set_value("受访者：已有的文稿。").run()
-            app.text_input(key="api_key_DeepSeek").set_value("test").run()
+            app.text_input(key="api_key_MiMo").set_value("test").run()
             app.button(key="run_analysis").click().run()
             self.assertTrue(app.session_state["analysis_job"].done.wait(2))
             app.run()

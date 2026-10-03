@@ -8,7 +8,6 @@ from pathlib import Path
 from xml.etree import ElementTree
 from zipfile import BadZipFile, ZipFile
 
-import keyring
 import streamlit as st
 from docx import Document
 from docx.opc.exceptions import PackageNotFoundError
@@ -22,6 +21,7 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from tama import TAMAFramework
 from analysis_job import JOB_REGISTRY
+from analysis_progress import DEFAULT_CONCURRENCY, MAX_CONCURRENCY
 from chunking import ChunkStrategy, plan_chunks
 from decisions import DecisionQuestion
 from decisions.jev_client import JevDecisionClient
@@ -30,7 +30,8 @@ from prompts import (
     JEV_CONNECTION_TEST_INSTRUCTIONS,
     JEV_CONNECTION_TEST_STATE,
 )
-from model_config import api_model_name
+from model_config import DEFAULT_MIMO_MODEL, api_model_name
+from api_settings import get_api_setting, read_api_key, write_api_key
 from reflexivity import (
     POSITION_FIELD,
     REFLEXIVITY_CHECKS,
@@ -45,6 +46,7 @@ from report_library import local_reports, load_library_report, report_label
 from ui_design import (
     load_styles, workspace_header, report_identity, narrative, evidence_quote,
     theme_badges, theme_outline, theme_heading, review_brief,
+    render_job_progress, format_duration,
 )
 from next_data_plan import GROUP_ORDER, material_review_text
 from evidence import EVIDENCE_LABELS, REVIEW_KIND_LABELS, is_matched
@@ -86,50 +88,99 @@ CHUNK_STRATEGIES: dict[str, ChunkStrategy] = {
     "手动设置": "manual",
 }
 
-KEYRING_SERVICE = "TAMA Qualitative Analysis"
-
-
 def load_saved_api_key(provider: str) -> str:
-    """Read a provider key once per browser session."""
-    state_key = f"saved_api_key_{provider}"
-    if state_key not in st.session_state:
-        try:
-            st.session_state[state_key] = keyring.get_password(KEYRING_SERVICE, provider) or ""
-        except Exception:
-            st.session_state[state_key] = ""
-            st.session_state[f"api_key_notice_{provider}"] = (
-                "warning", "系统凭据库暂不可用；仍可手动填写 API Key。"
+    """Read a provider key from the project .env or process environment."""
+    try:
+        return read_api_key(provider)
+    except Exception:
+        notice_key = f"api_key_notice_{provider}"
+        if notice_key not in st.session_state:
+            st.session_state[notice_key] = (
+                "warning", "项目 .env 暂时无法读取；仍可手动填写 API Key。"
             )
-    return st.session_state[state_key]
+        return ""
 
 
 def save_api_key(provider: str) -> None:
-    """Persist a key only after the user clicks Save."""
+    """Replace or clear the persisted key only after the user clicks Save."""
     typed_key = st.session_state.get(f"api_key_{provider}", "").strip()
     notice_key = f"api_key_notice_{provider}"
-    if not typed_key:
-        st.session_state[notice_key] = ("error", "请先输入要保存的 API Key。")
-        return
     try:
-        keyring.set_password(KEYRING_SERVICE, provider, typed_key)
+        write_api_key(provider, typed_key)
     except Exception:
-        st.session_state[notice_key] = ("error", "保存失败，请检查系统凭据库是否可用。")
+        st.session_state[notice_key] = ("error", "保存失败，请检查项目 .env 文件是否可写。")
         return
     st.session_state[f"saved_api_key_{provider}"] = typed_key
-    st.session_state[f"api_key_{provider}"] = ""
-    st.session_state[notice_key] = ("success", "API Key 已保存到系统凭据库。")
+    st.session_state[f"api_key_draft_{provider}"] = typed_key
+    st.session_state[f"api_key_{provider}"] = typed_key
+    message = "API Key 已保存到项目 .env，旧 Key 已替换。" if typed_key else "已清除项目 .env 中保存的 API Key。"
+    st.session_state[notice_key] = ("success", message)
 
 
-def delete_saved_api_key(provider: str) -> None:
-    """Remove only this provider's persisted key."""
-    notice_key = f"api_key_notice_{provider}"
+def remember_api_key_input(provider: str) -> None:
+    st.session_state[f"api_key_draft_{provider}"] = st.session_state[f"api_key_{provider}"]
+
+
+def toggle_api_key_visibility(provider: str) -> None:
+    state_key = f"api_key_hidden_{provider}"
+    st.session_state[state_key] = not st.session_state.get(state_key, False)
+
+
+def model_setting(name: str, default: str = "") -> str:
     try:
-        keyring.delete_password(KEYRING_SERVICE, provider)
-    except Exception:
-        st.session_state[notice_key] = ("error", "删除失败，请检查系统凭据库是否可用。")
-        return
-    st.session_state[f"saved_api_key_{provider}"] = ""
-    st.session_state[notice_key] = ("success", "已删除系统凭据库中保存的 API Key。")
+        return get_api_setting(name, default)
+    except OSError:
+        return default
+
+
+def render_api_key_input(provider: str, label: str, running: bool) -> str:
+    saved_key = load_saved_api_key(provider)
+    draft_key = f"api_key_draft_{provider}"
+    loaded_key = f"api_key_loaded_{provider}"
+    widget_key = f"api_key_{provider}"
+    if draft_key not in st.session_state:
+        st.session_state[draft_key] = (
+            st.session_state.get(widget_key, "") or saved_key
+        )
+    elif (
+        loaded_key in st.session_state
+        and saved_key != st.session_state[loaded_key]
+        and st.session_state[draft_key] == st.session_state[loaded_key]
+    ):
+        st.session_state[draft_key] = saved_key
+    st.session_state[loaded_key] = saved_key
+    # Keep edits when switching providers or changing the input's visibility.
+    st.session_state[widget_key] = st.session_state[draft_key]
+    hidden = st.session_state.get(f"api_key_hidden_{provider}", False)
+    api_key = st.text_input(
+        label, type="password" if hidden else "default", key=widget_key,
+        on_change=remember_api_key_input, args=(provider,), disabled=running,
+    )
+    visibility_col, save_col = st.columns(2)
+    with visibility_col:
+        st.button(
+            "显示 Key" if hidden else "隐藏 Key", key=f"toggle_api_key_{provider}",
+            on_click=toggle_api_key_visibility, args=(provider,), disabled=running,
+            use_container_width=True,
+        )
+    with save_col:
+        st.button(
+            "保存 Jev Key" if provider == "Jev" else "保存 API Key",
+            key="save_jev_api_key" if provider == "Jev" else "save_api_key",
+            on_click=save_api_key, args=(provider,), disabled=running,
+            use_container_width=True,
+        )
+    st.caption("保存在项目 .env 文件中。修改后保存会替换旧 Key；清空后保存会清除旧 Key。")
+    notice = st.session_state.pop(f"api_key_notice_{provider}", None)
+    if notice:
+        kind, message = notice
+        if kind == "success":
+            st.success(message)
+        elif kind == "warning":
+            st.warning(message)
+        else:
+            st.error(message)
+    return api_key.strip()
 
 
 def check_api_connection(api_key: str, model: str, base_url: str | None, provider: str) -> None:
@@ -164,41 +215,86 @@ def connection_input_error(
     decision_mode: str, jev_api_key: str, env_name: str,
 ) -> str | None:
     if not api_key:
-        return f"请填写 API Key，或设置 {env_name} 环境变量。"
+        return f"请填写 API Key，或在项目 .env 中设置 {env_name}。"
     if not model.strip():
         return "请填写模型名称。"
     if base_url is not None and not endpoint:
         return "请填写接口地址。"
     if decision_mode == JEV_DECISION_MODE and not jev_api_key:
-        return "决策模式为 Jev 时，请填写 Jev API Key，或设置 JEV_API_KEY 环境变量。"
+        return "决策模式为 Jev 时，请填写 Jev API Key，或在项目 .env 中设置 JEV_API_KEY。"
     return None
+
+
+def apply_concurrency_setting(widget_key: str = "max_workers") -> None:
+    value = st.session_state[widget_key]
+    if value is None:
+        value = st.session_state.get("_concurrency_value", DEFAULT_CONCURRENCY)
+    value = int(value)
+    st.session_state[widget_key] = value
+    st.session_state["max_workers"] = value
+    st.session_state["_concurrency_value"] = value
+    job = st.session_state.get("analysis_job")
+    if job is not None:
+        snapshot = job.snapshot()
+        if not snapshot.done and not snapshot.cancelled and getattr(snapshot, "dynamic_concurrency", False):
+            job.set_concurrency(value)
+    if widget_key == "live_max_workers":
+        st.session_state["_refresh_concurrency_settings"] = True
+
+
+def set_concurrency_preset(value: int) -> None:
+    st.session_state["max_workers"] = value
+    apply_concurrency_setting()
 
 
 @st.fragment(run_every="1s")
 def render_active_job() -> None:
+    if st.session_state.pop("_refresh_concurrency_settings", False):
+        st.rerun()
     job = st.session_state["analysis_job"]
     snapshot = job.snapshot()
     if snapshot.done:
         st.rerun()
 
-    if snapshot.pause_requested:
-        if st.button("继续分析", key="resume_analysis", use_container_width=True):
+    if snapshot.cancelled:
+        with st.container(key="cancellation_pending"):
+            notice = st.status("正在取消分析", state="running", expanded=True)
+            notice.write("取消请求已收到，后续模型请求已停止。")
+            notice.caption("正在等待已发送的请求结束；完成后会自动显示“分析已取消”。")
+            notice.caption(f"当前阶段：{snapshot.stage}")
+            notice.caption(f"累计用时：{format_duration(getattr(snapshot, 'elapsed_seconds', None))}")
+        st.button("正在取消…", key="cancel_analysis", disabled=True, use_container_width=True)
+        return
+
+    render_job_progress(snapshot)
+    pause_col, cancel_col = st.columns(2)
+    with pause_col:
+        if snapshot.pause_requested and st.button("继续分析", key="resume_analysis", use_container_width=True):
             job.resume()
             st.rerun()
-    elif st.button("暂停分析", key="pause_analysis", use_container_width=True):
-        job.pause()
-        st.rerun()
-    if st.button("取消分析", key="cancel_analysis", use_container_width=True):
-        job.cancel()
-        st.rerun()
+        elif not snapshot.pause_requested and st.button("暂停分析", key="pause_analysis", use_container_width=True):
+            job.pause()
+            st.rerun()
+    with cancel_col:
+        if st.button("取消分析", key="cancel_analysis", use_container_width=True):
+            job.cancel()
+            st.rerun()
+
+    if getattr(snapshot, "dynamic_concurrency", False):
+        with st.expander("调整本轮并发"):
+            st.session_state["live_max_workers"] = snapshot.concurrency_limit
+            st.slider("本轮并发上限", min_value=1, max_value=MAX_CONCURRENCY,
+                      key="live_max_workers", on_change=apply_concurrency_setting,
+                      args=("live_max_workers",))
+            st.caption("调整会应用于尚未开始的任务；降低上限时，已发送的请求会继续完成。")
+    else:
+        st.caption("本次任务沿用启动时的并发数；新的分析支持运行中调整。")
 
     snapshot = job.snapshot()
     if snapshot.paused:
         st.warning(f"已阻止后续请求，先前发出的请求可能仍在完成 · {snapshot.stage}")
     elif snapshot.pause_requested:
         st.info(f"等待当前请求完成后暂停 · {snapshot.stage}")
-    else:
-        st.info(f"正在分析 · {snapshot.stage}")
     st.caption("暂停或取消会在下一次模型请求前生效；刷新页面可接回任务，请保持本地服务运行。")
 
 
@@ -735,6 +831,12 @@ def main() -> None:
     if job is not None:
         st.session_state["analysis_job"] = job
     running = job is not None and not job.snapshot().done
+    live_concurrency = running and getattr(job.snapshot(), "dynamic_concurrency", False)
+    concurrency_locked = running and (not live_concurrency or job.snapshot().cancelled)
+    st.session_state.setdefault("max_workers", DEFAULT_CONCURRENCY)
+    if live_concurrency:
+        st.session_state["max_workers"] = job.snapshot().concurrency_limit
+        st.session_state["_concurrency_value"] = job.snapshot().concurrency_limit
     if job is not None and job.snapshot().done and job.snapshot().result is not None:
         st.session_state["analysis_result"] = job.snapshot().result
     remember_current_report()
@@ -744,51 +846,28 @@ def main() -> None:
         settings = st.popover("分析设置", icon=":material/tune:", use_container_width=True)
     with settings:
         st.markdown('<div class="tl-settings-heading">分析设置</div>', unsafe_allow_html=True)
-        st.caption("调整后自动应用于下一次分析。")
+        st.caption("并发数支持运行中调整；其他设置应用于下一次分析。")
         connection_settings, analysis_settings = st.tabs(["模型连接", "分析参数"])
     with connection_settings:
         st.subheader("模型连接")
         providers = {
+            "MiMo": ("MIMO_API_KEY", DEFAULT_MIMO_MODEL),
             "DeepSeek": ("DEEPSEEK_API_KEY", "DeepSeek-V4.1-Flash"),
-            "MiMo": ("MIMO_API_KEY", "mimo-v2.5-pro"),
-            "OpenAI": ("OPENAI_API_KEY", "gpt-4o"),
+            "自定义": ("CUSTOM_API_KEY", model_setting("CUSTOM_MODEL")),
         }
+        if st.session_state.get("provider") == "OpenAI":
+            st.session_state["provider"] = "自定义"
         provider = st.selectbox("服务商", list(providers), key="provider", disabled=running)
+        if provider == "自定义":
+            st.caption("填写服务商提供的模型 ID 和接口基础地址，支持 OpenAI 兼容接口。")
         env_name, default_model = providers[provider]
-        saved_api_key = load_saved_api_key(provider)
-        api_key_input = st.text_input(
-            "API Key", type="password", key=f"api_key_{provider}", disabled=running,
-        )
-        if api_key_input.strip():
-            st.caption("本次使用输入框中的 API Key。点击保存后，下次打开仍可使用。")
-        elif saved_api_key:
-            st.caption("凭据来源：本机系统凭据库。输入框留空时自动使用。")
-        elif os.getenv(env_name, "").strip():
-            st.caption(f"凭据来源：环境变量 {env_name}。")
-        else:
-            st.caption(f"尚未配置。可输入密钥，或设置 {env_name} 环境变量。")
-        save_col, delete_col = st.columns(2)
-        with save_col:
-            st.button(
-                "保存 API Key", key="save_api_key", on_click=save_api_key,
-                args=(provider,), disabled=running, use_container_width=True,
-            )
-        with delete_col:
-            st.button(
-                "删除已存 Key", key="delete_saved_api_key", on_click=delete_saved_api_key,
-                args=(provider,), disabled=running or not saved_api_key, use_container_width=True,
-            )
-        notice = st.session_state.pop(f"api_key_notice_{provider}", None)
-        if notice:
-            kind, message = notice
-            if kind == "success":
-                st.success(message)
-            elif kind == "warning":
-                st.warning(message)
-            else:
-                st.error(message)
+        api_key = render_api_key_input(provider, "API Key", running)
 
         model_key = f"model_{provider}"
+        if provider == "MiMo" and not running and "mimo_v26_migrated" not in st.session_state:
+            if st.session_state.get(model_key) in ("mimo-v2.5-pro", "mimo-v2.5"):
+                st.session_state[model_key] = DEFAULT_MIMO_MODEL
+            st.session_state["mimo_v26_migrated"] = True
         if provider == "DeepSeek" and "deepseek_display_migrated" not in st.session_state:
             if st.session_state.get(model_key) == "deepseek-flash":
                 st.session_state[model_key] = "DeepSeek-V4.1-Flash"
@@ -802,7 +881,7 @@ def main() -> None:
         if provider == "MiMo":
             base_url = st.text_input(
                 "接口地址",
-                value=os.getenv("MIMO_BASE_URL") or "https://api.xiaomimimo.com/v1",
+                value=model_setting("MIMO_BASE_URL") or "https://api.xiaomimimo.com/v1",
                 help="使用 Token Plan 时，填写控制台提供的专属 OpenAI 兼容地址。",
                 key="mimo_base_url",
                 disabled=running,
@@ -810,13 +889,21 @@ def main() -> None:
         elif provider == "DeepSeek":
             base_url = st.text_input(
                 "接口地址",
-                value=os.getenv("DEEPSEEK_BASE_URL") or "https://api.deepseek.com",
+                value=model_setting("DEEPSEEK_BASE_URL") or "https://api.deepseek.com",
                 help="DeepSeek 官方 OpenAI 兼容接口地址；可按需填写自定义地址。",
                 key="deepseek_base_url",
                 disabled=running,
             )
+        elif provider == "自定义":
+            base_url = st.text_input(
+                "接口地址",
+                value=model_setting("CUSTOM_BASE_URL"),
+                placeholder="https://api.example.com/v1",
+                help="填写服务商提供的接口基础地址（Base URL），不包含 /chat/completions。",
+                key="custom_base_url",
+                disabled=running,
+            )
 
-        api_key = api_key_input.strip() or saved_api_key or os.getenv(env_name, "").strip()
         endpoint = base_url.strip() if base_url is not None else None
 
         st.subheader("决策接口")
@@ -827,40 +914,7 @@ def main() -> None:
         )
         jev_api_key = ""
         if decision_mode == JEV_DECISION_MODE:
-            saved_jev_api_key = load_saved_api_key("Jev")
-            jev_api_key_input = st.text_input(
-                "Jev API Key", type="password", key="api_key_Jev", disabled=running,
-            )
-            if saved_jev_api_key:
-                st.caption("已保存 Jev API Key；输入框留空时自动使用。")
-            else:
-                st.caption("留空时读取本机环境变量 JEV_API_KEY。")
-            jev_save_col, jev_delete_col = st.columns(2)
-            with jev_save_col:
-                st.button(
-                    "保存 Jev Key", key="save_jev_api_key", on_click=save_api_key,
-                    args=("Jev",), disabled=running, use_container_width=True,
-                )
-            with jev_delete_col:
-                st.button(
-                    "删除已存 Key", key="delete_saved_jev_api_key",
-                    on_click=delete_saved_api_key, args=("Jev",),
-                    disabled=running or not saved_jev_api_key, use_container_width=True,
-                )
-            jev_notice = st.session_state.pop("api_key_notice_Jev", None)
-            if jev_notice:
-                kind, message = jev_notice
-                if kind == "success":
-                    st.success(message)
-                elif kind == "warning":
-                    st.warning(message)
-                else:
-                    st.error(message)
-            jev_api_key = (
-                jev_api_key_input.strip()
-                or saved_jev_api_key
-                or os.getenv("JEV_API_KEY", "").strip()
-            )
+            jev_api_key = render_api_key_input("Jev", "Jev API Key", running)
             st.caption("可选环境变量：JEV_BASE_URL、JEV_MODEL。")
 
         st.caption("测试会发送一次简短模型请求，可能产生少量费用。")
@@ -881,7 +935,7 @@ def main() -> None:
                         with st.spinner("正在测试决策接口……"):
                             check_jev_connection(
                                 jev_api_key,
-                                os.getenv("JEV_BASE_URL"),
+                                model_setting("JEV_BASE_URL") or None,
                             )
                 except APIStatusError as exc:
                     st.error(f"连接失败 · HTTP {exc.status_code}，请检查密钥、地址和模型名称。")
@@ -892,71 +946,88 @@ def main() -> None:
                     st.success("连接成功，密钥、地址和模型可用。")
 
     with analysis_settings:
-        st.subheader("切块与评估")
-        profile_label = st.selectbox(
-            "研究配置", ["通用主题分析", "企业能力与证据链"],
-            key="research_profile", disabled=running,
-        )
-        profile = "enterprise_evidence" if profile_label == "企业能力与证据链" else "generic"
-        research_question = st.text_input(
-            "研究问题（选填）", key="research_question", disabled=running,
-            help="通用配置留空即可；企业配置留空时使用内置研究问题。",
-        )
-        focus_text = st.text_input(
-            "关注点（选填，逗号分隔）", key="focus_areas", disabled=running,
-            help="通用配置留空即可；企业配置留空时使用内置关注点。",
-        )
-        chunk_strategy_label = st.selectbox(
-            "切块策略",
-            list(CHUNK_STRATEGIES),
-            index=1,
-            key="chunk_strategy",
-            disabled=running,
-            help="自动模式会按全文长度计算片段数量，并优先在完整问答、段落、说话人轮次或句末切分。",
-        )
-        chunk_strategy = CHUNK_STRATEGIES[chunk_strategy_label]
-        chunk_size = None
-        if chunk_strategy == "manual":
-            chunk_size = st.number_input(
-                "初始切块上限（字词/块）", min_value=100, max_value=10000,
-                value=4000, step=100, key="chunk_size", disabled=running,
-                help="中文按字，英文等文本按空格分词；系统仍会优先在自然边界处切分。",
+        with st.container(key="settings_section_research"):
+            st.subheader("研究目标")
+            profile_label = st.selectbox(
+                "研究配置", ["通用主题分析", "企业能力与证据链"],
+                key="research_profile", disabled=running,
             )
-        else:
-            strategy_help = {
-                "fine": "片段更小，局部编码更细，请求通常更多。",
-                "balanced": "在编码细度和 API 请求数量之间保持平衡。",
-                "economy": "片段更大，减少 API 请求，适合较长材料。",
-            }
-            st.caption(strategy_help[chunk_strategy])
-        max_workers = st.number_input(
-            "并发请求数", min_value=1, max_value=8, value=4, step=1,
-            key="max_workers", disabled=running,
-            help="用于相互独立的片段编码、全文回查和主题评估请求；遇到接口限流时可调低。",
-        )
-        corpus_review = st.checkbox(
-            "全文检查（查找遗漏和反例）", value=True, key="corpus_review", disabled=running,
-            help="首次生成候选主题后，逐片检查本次全文；新增有效证据会更新候选主题。会增加模型调用与耗时。",
-        )
-        max_iterations = st.number_input(
-            "最多评估轮次", min_value=1, max_value=10, value=5,
-            disabled=running,
-        )
-        save_intermediate = st.checkbox(
-            "保存阶段文件",
-            value=False,
-            disabled=running,
-            help="包含文本片段、编码及逐轮评估，保存在本机 outputs 目录。",
-        )
-        save_final = st.checkbox(
-            "保存本地结果", value=False, key="save_final", disabled=running,
-            help="完整 JSON 包含本次原文。关闭时不保存本地结果，可按需下载；Word 不附整篇原文。",
-        )
-        with st.expander("高级设置"):
-            confidence_threshold = st.number_input(
-                "置信度阈值", min_value=0.05, max_value=1.0, value=0.7, step=0.05,
-                key="confidence_threshold", disabled=running,
-                help="评估判断的置信度低于该值时，会请求详细反馈并在结果中标记为建议人工复核。",
+            profile = "enterprise_evidence" if profile_label == "企业能力与证据链" else "generic"
+            research_question = st.text_input(
+                "研究问题（选填）", key="research_question", disabled=running,
+                help="通用配置留空即可；企业配置留空时使用内置研究问题。",
+            )
+            focus_text = st.text_input(
+                "关注点（选填，逗号分隔）", key="focus_areas", disabled=running,
+                help="通用配置留空即可；企业配置留空时使用内置关注点。",
+            )
+        with st.container(key="settings_section_chunking"):
+            st.subheader("切块与运行")
+            chunk_strategy_label = st.selectbox(
+                "切块策略",
+                list(CHUNK_STRATEGIES),
+                index=1,
+                key="chunk_strategy",
+                disabled=running,
+                help="自动模式会按全文长度计算片段数量，并优先在完整问答、段落、说话人轮次或句末切分。",
+            )
+            chunk_strategy = CHUNK_STRATEGIES[chunk_strategy_label]
+            chunk_size = None
+            if chunk_strategy == "manual":
+                chunk_size = st.number_input(
+                    "初始切块上限（字词/块）", min_value=100, max_value=10000,
+                    value=4000, step=100, key="chunk_size", disabled=running,
+                    help="中文按字，英文等文本按空格分词；系统仍会优先在自然边界处切分。",
+                )
+            else:
+                strategy_help = {
+                    "fine": "片段更小，局部编码更细，请求通常更多。",
+                    "balanced": "在编码细度和 API 请求数量之间保持平衡。",
+                    "economy": "片段更大，减少 API 请求，适合较长材料。",
+                }
+                st.caption(strategy_help[chunk_strategy])
+            max_workers = st.number_input(
+                "下次分析并发请求数" if running and not live_concurrency else "并发请求数",
+                min_value=1, max_value=MAX_CONCURRENCY,
+                value=None, step=1, key="max_workers",
+                disabled=concurrency_locked, on_change=apply_concurrency_setting,
+                help="用于独立片段、主题批次和评估。提高上限可加速并行阶段；遇到接口限流时请调低。",
+            )
+            for column, value, label in zip(st.columns(3), (4, 8, 16), ("4 · 稳妥", "8 · 推荐", "16 · 加速")):
+                column.button(label, key=f"concurrency_preset_{value}", on_click=set_concurrency_preset,
+                              args=(value,), disabled=concurrency_locked, use_container_width=True)
+            st.caption("并发上限 1–16。模型响应速度和接口限流也会影响用时，串行步骤仍需等待。")
+            if live_concurrency:
+                st.caption("本轮立即采用新的上限；已发送的请求会继续完成。")
+            elif running:
+                st.caption("本轮为更新前启动的任务，沿用原并发数；完成后可调整新任务。")
+        with st.container(key="settings_section_evaluation"):
+            st.subheader("评估与回查")
+            corpus_review = st.checkbox(
+                "全文检查（查找遗漏和反例）", value=True, key="corpus_review", disabled=running,
+                help="首次生成候选主题后，逐片检查本次全文；新增有效证据会更新候选主题。会增加模型调用与耗时。",
+            )
+            max_iterations = st.number_input(
+                "最多评估轮次", min_value=1, max_value=10, value=5,
+                disabled=running,
+            )
+            with st.expander("高级设置"):
+                confidence_threshold = st.number_input(
+                    "置信度阈值", min_value=0.05, max_value=1.0, value=0.7, step=0.05,
+                    key="confidence_threshold", disabled=running,
+                    help="评估判断的置信度低于该值时，会请求详细反馈并在结果中标记为建议人工复核。",
+                )
+        with st.container(key="settings_section_storage"):
+            st.subheader("结果保存")
+            save_intermediate = st.checkbox(
+                "保存阶段文件",
+                value=False,
+                disabled=running,
+                help="包含文本片段、编码及逐轮评估，保存在本机 outputs 目录。",
+            )
+            save_final = st.checkbox(
+                "保存本地结果", value=False, key="save_final", disabled=running,
+                help="完整 JSON 包含本次原文。关闭时不保存本地结果，可按需下载；Word 不附整篇原文。",
             )
 
     with st.sidebar:
@@ -1044,11 +1115,13 @@ def main() -> None:
                 if decision_mode == JEV_DECISION_MODE:
                     decision_provider = JevDecisionClient(
                         api_key=jev_api_key,
-                        base_url=os.getenv("JEV_BASE_URL") or None,
-                        model=os.getenv("JEV_MODEL") or None,
+                        base_url=model_setting("JEV_BASE_URL") or None,
+                        model=model_setting("JEV_MODEL") or None,
                     )
 
                 def run(checkpoint):
+                    job_control = checkpoint.__self__
+                    job_control.enable_live_control()
                     run_options = {key: value for key, value in research_options.items() if key != "analysis_mode"}
                     framework = TAMAFramework(
                         api_key=api_key,
@@ -1072,6 +1145,8 @@ def main() -> None:
                         save_intermediate=save_intermediate,
                         save_final=save_final,
                         before_model_call=checkpoint,
+                        on_progress=job_control.report_progress,
+                        concurrency_limit=job_control.concurrency,
                         **({"case_id": case_id} if case_id.strip() else {}),
                         **run_options,
                     )
@@ -1080,7 +1155,7 @@ def main() -> None:
                 st.session_state.pop("_result_widget_scope", None)
                 st.session_state.pop("analysis_result", None)
                 try:
-                    job = JOB_REGISTRY.start(run)
+                    job = JOB_REGISTRY.start(run, max_workers=int(max_workers))
                 except RuntimeError:
                     st.error("已有分析正在运行，请接回或取消该任务。")
                 else:
@@ -1092,11 +1167,16 @@ def main() -> None:
             if snapshot.result is not None:
                 st.session_state["analysis_result"] = snapshot.result
             elif snapshot.cancelled:
-                st.info("分析已取消；已发出的模型请求可能已计费。")
+                with st.container(key="cancellation_complete"):
+                    notice = st.status("分析已取消", state="complete", expanded=True)
+                    notice.write("本次分析已结束，可以修改材料后重新开始。")
+                    notice.caption("已发送的模型请求可能已计费。")
+                    notice.caption(f"累计用时：{format_duration(getattr(snapshot, 'elapsed_seconds', None))}")
             else:
                 st.error("分析未完成。请检查密钥、接口地址、网络和模型返回内容。")
                 st.caption(f"错误类型：{snapshot.error_type}")
                 st.caption(f"失败阶段：{snapshot.stage}")
+                st.caption(f"累计用时：{format_duration(getattr(snapshot, 'elapsed_seconds', None))}")
                 if snapshot.error_location:
                     st.caption(f"错误位置：{snapshot.error_location}")
                 if snapshot.http_status:
